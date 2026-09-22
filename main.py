@@ -17,22 +17,25 @@ def main():
             user_input = input("You: ")
             if user_input.lower() in ['quit', 'exit']:
                 break
+            print("\n")
 
-            interaction = client.interactions.create(
+            stream = client.interactions.create(
                 model=MODEL_NAME,
                 input=user_input,
                 system_instruction=SYSTEM_INSTRUCTION,
                 store=True,
-                #stream=True,
+                stream=True,
                 previous_interaction_id=last_interaction_id
             )
-
-            print(f"\nGemini: {interaction.output_text}\n")
-
-            last_interaction_id = interaction.id
+            for event in stream:
+                if event.event_type == "step.delta" and event.delta.type == "text":
+                    print(event.delta.text, end="", flush=True)
+                elif event.event_type == "interaction.completed":
+                    last_interaction_id = event.interaction.id
+                    print("\n")
 
     except KeyboardInterrupt:
-        print("You've terminated your session")
+        print("\nYou've terminated your session")
 
 if __name__ == "__main__":
     main()
