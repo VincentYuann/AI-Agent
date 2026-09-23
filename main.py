@@ -12,9 +12,13 @@ load_dotenv()
 client = genai.Client()  # automatically reads GEMINI_API_KEY from environment
 MODEL_NAME = "gemini-3.5-flash-lite"
 SYSTEM_INSTRUCTION = (
-    "You are a helpful portfolio assistant. When answering questions about League of Legends "
-    "tier lists or champion recommendations, use the champion tier list tool if not already loaded, "
-    "and give specific champion names and reasoning based on the tier list."
+    "You are a helpful portfolio assistant for Vincent Yuan. "
+    "When answering questions about Vincent Yuan, his education, skills, projects, or work experience, "
+    "use the resume tool if not already in context. "
+    "When answering questions about League of Legends tier lists or champion recommendations, "
+    "use the champion tier list tool if not already loaded, "
+    "and give specific champion names and reasoning based on the tier list. "
+    "You can also inspect and answer questions about any documents or images uploaded by the user."
 )
 
 # -------------------------------------------------------------
@@ -40,8 +44,16 @@ def get_champ_tier_list() -> list[dict]:
     ]
 
 @lru_cache(maxsize=1)
-def _load_resume_pdf() -> str:
-    uploaded_file = client.files.upload(file="file.pdf")
+def _load_resume_text() -> str:
+    """Extract and cache resume text using PdfReader."""
+    resume_path = os.path.join(os.path.dirname(__file__), "assets", "Vincent_Yuan_Resume.pdf")
+    reader = PdfReader(resume_path)
+    return "\n".join([page.extract_text() or "" for page in reader.pages])
+
+
+def get_resume() -> list[dict]:
+    """Returns the text content of Vincent Yuan's resume."""
+    return [{"type": "text", "text": _load_resume_text()}]
 
 # -------------------------------------------------------------
 # 2. TOOL SCHEMAS & DISPATCH (Declarative JSON schema for Gemini)
@@ -56,10 +68,21 @@ get_champ_tier_list_tool = {
     },
 }
 
-TOOLS_SCHEMA = [get_champ_tier_list_tool]
+get_resume_tool = {
+    "type": "function",
+    "name": "get_resume",
+    "description": "Returns Vincent Yuan's resume text. Call this tool when answering questions about Vincent's experience, skills, education, or portfolio.",
+    "parameters": {
+        "type": "object",
+        "properties": {},
+    },
+}
+
+TOOLS_SCHEMA = [get_champ_tier_list_tool, get_resume_tool]
 
 TOOL_FUNCTIONS = {
     "get_champ_tier_list": get_champ_tier_list,
+    "get_resume": get_resume,
 }
 
 
@@ -79,21 +102,8 @@ def chat_with_agent(last_interaction_id: str | None, user_input) -> str | None:
                 previous_interaction_id=current_interaction_id,
             )
         except Exception as e:
-            if "404" in str(e) or "not_found" in str(e).lower():
-                print("[Previous session not found. Starting a fresh turn...]\n")
-                current_interaction_id = None
-                stream = client.interactions.create(
-                    model=MODEL_NAME,
-                    input=current_input,
-                    system_instruction=SYSTEM_INSTRUCTION,
-                    store=True,
-                    stream=True,
-                    tools=TOOLS_SCHEMA,
-                    previous_interaction_id=None,
-                )
-            else:
-                print(f"[API Error: {e}]")
-                return None
+            print(f"[API Error: {e}]")
+            return None
 
         current_calls = {}
         had_stream_error = False
@@ -144,15 +154,7 @@ def chat_with_agent(last_interaction_id: str | None, user_input) -> str | None:
             else:
                 try:
                     args = json.loads(raw_args) if raw_args.strip() else {}
-                    output = func(**args) if args else func()
-
-                    # Modular result packaging
-                    if isinstance(output, list):
-                        result_content = output
-                    elif isinstance(output, dict):
-                        result_content = [{"type": "text", "text": json.dumps(output)}]
-                    else:
-                        result_content = [{"type": "text", "text": str(output)}]
+                    result_content = func(**args) if args else func()
                 except Exception as e:
                     result_content = [{"type": "text", "text": f"Error executing {func_name}: {e}"}]
 
@@ -168,15 +170,65 @@ def chat_with_agent(last_interaction_id: str | None, user_input) -> str | None:
     return current_interaction_id
 
 
+def upload_file_for_interaction(file_path: str) -> dict:
+    """Uploads a local file using the Gemini Files API and returns the multimodal content block."""
+    clean_path = file_path.strip().strip('"').strip("'")
+    if not os.path.exists(clean_path):
+        raise FileNotFoundError(f"File not found: {clean_path}")
+
+    uploaded_file = client.files.upload(file=clean_path)
+    mime = (uploaded_file.mime_type or "").lower()
+
+    if mime.startswith("image/"):
+        part_type = "image"
+    elif "pdf" in mime or mime.startswith("text/") or "document" in mime:
+        part_type = "document"
+    elif mime.startswith("audio/"):
+        part_type = "audio"
+    elif mime.startswith("video/"):
+        part_type = "video"
+    else:
+        part_type = "document"
+
+    return {
+        "type": part_type,
+        "uri": uploaded_file.uri,
+        "mime_type": uploaded_file.mime_type,
+    }
+
+
 def main():
     last_interaction_id = None
-    print(f"=== Chat with {MODEL_NAME} (type 'quit' or 'exit' to stop) ===\n")
+    print(f"=== Chat with {MODEL_NAME} (type 'quit' to stop, or '/upload <path> [prompt]' to upload a file) ===\n")
     try:
         while True:
-            user_input = input("You: ")
-            if user_input.strip().lower() in ["quit", "exit"]:
+            user_input = input("You: ").strip()
+            if not user_input:
+                continue
+            if user_input.lower() in ["quit", "exit"]:
                 break
             print()
+
+            # Handle file upload via Gemini Files API
+            if user_input.startswith("/upload"):
+                parts = user_input.split(maxsplit=2)
+                if len(parts) < 2:
+                    print("[Usage: /upload <file_path> <optional prompt>]\n")
+                    continue
+                file_path = parts[1]
+                prompt = parts[2] if len(parts) > 2 else "Please analyze this file."
+                try:
+                    print(f"[Uploading {file_path} via Files API...]", flush=True)
+                    file_block = upload_file_for_interaction(file_path)
+                    print(f"[Uploaded successfully: {file_block['uri']} ({file_block['mime_type']})]\n", flush=True)
+                    current_payload = [
+                        file_block,
+                        {"type": "text", "text": prompt},
+                    ]
+                    last_interaction_id = chat_with_agent(last_interaction_id, current_payload)
+                except Exception as e:
+                    print(f"[Upload Error: {e}]\n")
+                continue
 
             last_interaction_id = chat_with_agent(last_interaction_id, user_input)
     except KeyboardInterrupt:
