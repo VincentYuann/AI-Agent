@@ -1,40 +1,51 @@
 import base64
 from functools import lru_cache
-import os
+from pathlib import Path
+from typing import List, Dict, Any
 from pypdf import PdfReader
 
-ASSETS_DIR = os.path.join(os.path.dirname(__file__), "assets")
+# Resolve ASSETS_DIR using pathlib
+ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
+if not ASSETS_DIR.exists():
+    ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+
 
 # -------------------------------------------------------------
-# 1. LOCAL ASSET LOADERS
+# 1. LOCAL ASSET LOADERS (Cached in memory)
 # -------------------------------------------------------------
 @lru_cache(maxsize=1)
 def _load_champ_tier_list_base64() -> str:
-    """Cache the base64 string in memory to avoid repeated disk reads."""
-    image_path = os.path.join(ASSETS_DIR, "champ_tier_list.webp")
-    with open(image_path, "rb") as image_file:
-        return base64.b64encode(image_file.read()).decode("utf-8")
+    """Cache the base64 string of the tier list image in memory."""
+    image_path = ASSETS_DIR / "champ_tier_list.webp"
+    if not image_path.exists():
+        return ""
+    return base64.b64encode(image_path.read_bytes()).decode("utf-8")
 
 
 @lru_cache(maxsize=1)
 def _load_resume_text() -> str:
     """Extract and cache resume text using PdfReader."""
-    resume_path = os.path.join(ASSETS_DIR, "Vincent_Yuan_Resume.pdf")
-    reader = PdfReader(resume_path)
+    resume_path = ASSETS_DIR / "Vincent_Yuan_Resume.pdf"
+    if not resume_path.exists():
+        return "Resume document not found."
+    reader = PdfReader(str(resume_path))
     return "\n".join([page.extract_text() or "" for page in reader.pages])
 
 
 # -------------------------------------------------------------
-# 2. TOOL EXECUTION FUNCTIONS (Enforced list[dict] output)
+# 2. TOOL EXECUTION FUNCTIONS
 # -------------------------------------------------------------
 def get_champ_tier_list() -> list[dict]:
     """Returns the multimodal content block for the champion tier list image."""
+    tier_data = _load_champ_tier_list_base64()
+    if not tier_data:
+        return [{"type": "text", "text": "Champion tier list image is unavailable."}]
     return [
         {"type": "text", "text": "champ_tier_list.webp"},
         {
             "type": "image",
             "mime_type": "image/webp",
-            "data": _load_champ_tier_list_base64(),
+            "data": tier_data,
         },
     ]
 
@@ -67,10 +78,14 @@ get_resume_tool = {
     },
 }
 
-TOOLS_SCHEMA = [get_champ_tier_list_tool, get_resume_tool]
+BASE_TOOLS_SCHEMA = [get_champ_tier_list_tool, get_resume_tool]
 
 TOOL_FUNCTIONS = {
     "get_champ_tier_list": get_champ_tier_list,
     "get_resume": get_resume,
 }
 
+
+def get_agent_tools(is_admin: bool) -> List[Dict[str, Any]]:
+    """Returns the tools for the portfolio assistant."""
+    return list(BASE_TOOLS_SCHEMA)
