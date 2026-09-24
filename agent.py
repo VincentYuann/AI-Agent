@@ -3,7 +3,7 @@ from config import client, MODEL_NAME, SYSTEM_INSTRUCTION
 from tools import TOOLS_SCHEMA, TOOL_FUNCTIONS
 
 
-def chat_with_agent(last_interaction_id: str | None, user_input) -> str | None:
+def chat_with_agent(last_interaction_id: str | None, user_input) -> str:
     current_interaction_id = last_interaction_id
     current_input = user_input
 

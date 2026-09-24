@@ -1,4 +1,6 @@
+import filetype
 import os
+import mimetypes
 from config import client
 
 
