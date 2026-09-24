@@ -1,4 +1,4 @@
-from typing import List, Union
+from typing import List, Union, Optional
 from google import genai
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -17,9 +17,11 @@ class Settings(BaseSettings):
     # API Keys & Auth Secrets
     GEMINI_API_KEY: SecretStr
     SUPABASE_JWT_SECRET: SecretStr
+    SUPABASE_URL: Optional[str] = None
 
-    # Dynamic Admin Verification (Configurable via .env, no hardcoding)
-    ADMIN_EMAILS: Union[List[str], str] = "vincentyuan1020@gmail.com"
+    # Dynamic Admin Verification (Configured exclusively via .env, never hardcoded in code)
+    ADMIN_EMAILS: Union[List[str], str] = ""
+    ADMIN_USERNAMES: Union[List[str], str] = ""
     ADMIN_ROLES: Union[List[str], str] = "admin,service_role"
 
     # Official Production Flash Model: gemini-3.6-flash (1,500 requests/day, 15 req/min on free tier)
@@ -44,6 +46,12 @@ class Settings(BaseSettings):
         if isinstance(self.ADMIN_EMAILS, list):
             return [e.strip().lower() for e in self.ADMIN_EMAILS if e.strip()]
         return [e.strip().lower() for e in self.ADMIN_EMAILS.split(",") if e.strip()]
+
+    @property
+    def admin_usernames_list(self) -> List[str]:
+        if isinstance(self.ADMIN_USERNAMES, list):
+            return [u.strip().lower() for u in self.ADMIN_USERNAMES if u.strip()]
+        return [u.strip().lower() for u in self.ADMIN_USERNAMES.split(",") if u.strip()]
 
     @property
     def admin_roles_list(self) -> List[str]:

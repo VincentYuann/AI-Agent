@@ -1,6 +1,8 @@
 import base64
-import tempfile
+import io
+import zipfile
 from pathlib import Path
+from typing import Dict, Any, Optional
 from fastapi import HTTPException, status, UploadFile
 import filetype
 from google import genai
@@ -16,68 +18,84 @@ ALLOWED_MIME_TYPES = {
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "application/msword",
 }
+DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
-async def validate_file_magic_bytes(file: UploadFile) -> str:
-    """Reads header magic bytes to verify actual MIME type against spoofing."""
-    header = await file.read(2048)
-    await file.seek(0)
+def prepare_gemini_content(file_bytes: bytes, mime_type: str, client: genai.Client) -> Dict[str, Any]:
+    """
+    Universal Gemini file processor for ANY byte source (local assets or uploads).
+    - Enforces universal maximum size limit.
+    - Routes small files (<5MB) to inline base64 data for minimal latency.
+    - Routes large files (>=5MB) to Gemini Files API using in-memory BytesIO (no temp files on disk).
+    """
+    file_size = len(file_bytes)
 
-    kind = filetype.guess(header)
-    detected_mime = kind.mime if kind else file.content_type
+    # 1. Universal Maximum Size Check
+    if file_size > settings.MAX_FILE_SIZE_BYTES:
+        max_mb = settings.MAX_FILE_SIZE_BYTES // (1024 * 1024)
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"File ({file_size / (1024 * 1024):.1f}MB) exceeds the maximum allowed limit of {max_mb}MB.",
+        )
 
-    # Fallback for Word document packages
-    ext = Path(file.filename or "").suffix.lower()
-    if ext == ".docx":
-        detected_mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    elif ext == ".doc":
-        detected_mime = "application/msword"
+    category = "document" if any(k in mime_type for k in ("pdf", "word", "document", "msword")) else "image"
 
-    if detected_mime not in ALLOWED_MIME_TYPES:
+    # 2. Small files (<5MB): Inline base64 (fastest, in-memory)
+    if file_size <= settings.INLINE_SIZE_LIMIT_BYTES:
+        return {
+            "type": category,
+            "data": base64.b64encode(file_bytes).decode("utf-8"),
+            "mime_type": mime_type,
+        }
+
+    # 3. Large files (>=5MB): Stream in-memory directly to Gemini Files API
+    uploaded = client.files.upload(
+        file=io.BytesIO(file_bytes),
+        config={"mime_type": mime_type},
+    )
+    return {
+        "type": category,
+        "uri": uploaded.uri,
+        "mime_type": uploaded.mime_type or mime_type,
+    }
+
+
+def validate_upload_magic_bytes(file_bytes: bytes, filename: Optional[str] = None) -> str:
+    """
+    Security guard for untrusted uploads: verifies magic bytes via filetype.
+    Inspects 8KB to detect ZIP headers, OLE2 containers, and compound formats.
+    """
+    kind = filetype.guess(file_bytes[:8192])
+    detected_mime = kind.mime if kind else None
+
+    # Disambiguate DOCX inside ZIP container
+    ext = Path(filename or "").suffix.lower()
+    if detected_mime == "application/zip" and ext == ".docx":
+        try:
+            with zipfile.ZipFile(io.BytesIO(file_bytes)) as zf:
+                if any(name.startswith("word/") for name in zf.namelist()):
+                    detected_mime = DOCX_MIME
+        except zipfile.BadZipFile:
+            pass
+
+    if not detected_mime or detected_mime not in ALLOWED_MIME_TYPES:
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-            detail=f"File type '{detected_mime}' is not permitted. Supported formats: PNG, JPEG, WEBP, GIF, PDF, DOCX.",
+            detail=(
+                f"File format '{detected_mime or 'unknown'}' is unsupported or spoofed. "
+                "Supported formats: PNG, JPEG, WEBP, GIF, PDF, DOCX, DOC."
+            ),
         )
+
     return detected_mime
 
 
-async def process_file_for_gemini(file: UploadFile, detected_mime: str, client: genai.Client) -> dict:
-    """
-    Reads small files (<5MB) inline into memory or streams large files (>=5MB)
-    to the Gemini Files API via pathlib.Path.
-    """
+async def process_user_upload(file: UploadFile, client: genai.Client) -> Dict[str, Any]:
+    """Upload endpoint pipeline: reads bytes, validates magic bytes, and formats for Gemini."""
     file_bytes = await file.read()
-    file_size = len(file_bytes)
+    mime_type = validate_upload_magic_bytes(file_bytes, file.filename)
+    return prepare_gemini_content(file_bytes, mime_type, client)
 
-    if file_size > settings.MAX_FILE_SIZE_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"File size ({file_size / (1024 * 1024):.1f}MB) exceeds the maximum allowed limit of {settings.MAX_FILE_SIZE_BYTES // (1024 * 1024)}MB.",
-        )
 
-    content_category = "document" if "pdf" in detected_mime or "word" in detected_mime else "image"
-
-    # CASE 1: Small file -> Inline data (kept in-memory for speed)
-    if file_size <= settings.INLINE_SIZE_LIMIT_BYTES:
-        return {
-            "type": content_category,
-            "data": base64.b64encode(file_bytes).decode("utf-8"),
-            "mime_type": detected_mime,
-        }
-
-    # CASE 2: Large file -> Gemini Files API via temporary Path
-    temp_dir = Path(tempfile.gettempdir()) / "agent_uploads"
-    temp_dir.mkdir(parents=True, exist_ok=True)
-    temp_file_path = temp_dir / Path(file.filename or "upload.tmp").name
-
-    try:
-        temp_file_path.write_bytes(file_bytes)
-        uploaded = client.files.upload(file=str(temp_file_path))
-        return {
-            "type": content_category,
-            "uri": uploaded.uri,
-            "mime_type": uploaded.mime_type or detected_mime,
-        }
-    finally:
-        if temp_file_path.exists():
-            temp_file_path.unlink()
+# Backwards compatibility aliases if needed
+validate_file_magic_bytes = validate_upload_magic_bytes

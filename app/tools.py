@@ -1,8 +1,10 @@
-import base64
 from functools import lru_cache
 from pathlib import Path
 from typing import List, Dict, Any
 from pypdf import PdfReader
+
+from .config import client
+from .files import prepare_gemini_content
 
 # Resolve ASSETS_DIR using pathlib
 ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
@@ -14,12 +16,16 @@ if not ASSETS_DIR.exists():
 # 1. LOCAL ASSET LOADERS (Cached in memory)
 # -------------------------------------------------------------
 @lru_cache(maxsize=1)
-def _load_champ_tier_list_base64() -> str:
-    """Cache the base64 string of the tier list image in memory."""
+def _load_champ_tier_list_payload() -> Dict[str, Any]:
+    """Cache the prepared Gemini payload for the champion tier list image."""
     image_path = ASSETS_DIR / "champ_tier_list.webp"
     if not image_path.exists():
-        return ""
-    return base64.b64encode(image_path.read_bytes()).decode("utf-8")
+        return {"type": "text", "text": "Champion tier list image is unavailable."}
+    return prepare_gemini_content(
+        file_bytes=image_path.read_bytes(),
+        mime_type="image/webp",
+        client=client,
+    )
 
 
 @lru_cache(maxsize=1)
@@ -37,16 +43,10 @@ def _load_resume_text() -> str:
 # -------------------------------------------------------------
 def get_champ_tier_list() -> list[dict]:
     """Returns the multimodal content block for the champion tier list image."""
-    tier_data = _load_champ_tier_list_base64()
-    if not tier_data:
-        return [{"type": "text", "text": "Champion tier list image is unavailable."}]
+    payload = _load_champ_tier_list_payload()
     return [
         {"type": "text", "text": "champ_tier_list.webp"},
-        {
-            "type": "image",
-            "mime_type": "image/webp",
-            "data": tier_data,
-        },
+        payload,
     ]
 
 

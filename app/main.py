@@ -1,11 +1,11 @@
 from typing import Annotated, Optional
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Form
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .config import settings, client
 from .security import get_user_context, UserContext
 from .agent import chat_with_agent
-from .files import validate_file_magic_bytes, process_file_for_gemini
+from .files import process_user_upload
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -21,11 +21,33 @@ app = FastAPI(
 
 
 class ChatResponse(BaseModel):
-    status: str
-    user_type: str
-    user_email: Optional[str] = None
-    interaction_id: Optional[str] = None
-    response: str
+    # =========================================================================
+    # PRODUCTION FRONTEND FIELDS (Strictly required for chat UI operation)
+    # =========================================================================
+    response: str = Field(
+        ...,
+        description="[Production UI] The agent's generated reply text to display in the chat window."
+    )
+    interaction_id: Optional[str] = Field(
+        None,
+        description="[Production UI] Thread ID to store in frontend state and send back for continuing multi-turn chats."
+    )
+
+    # =========================================================================
+    # SWAGGER / DEBUG FIELDS (For verification and testing in /docs without checking server logs)
+    # =========================================================================
+    user_type: str = Field(
+        ...,
+        description="[Swagger / Debug] Identifies caller privileges: 'Admin', 'Logged-in User', or 'Guest'."
+    )
+    user_email: Optional[str] = Field(
+        None,
+        description="[Swagger / Debug] Verified email address or GitHub username from decoded Supabase JWT."
+    )
+    status: str = Field(
+        "success",
+        description="[REST Standard] HTTP response wrapper status string."
+    )
 
 
 @app.get("/")
@@ -40,10 +62,17 @@ def health_check():
 
 @app.post("/api/v1/chat", response_model=ChatResponse)
 async def chat_endpoint(
-    message: Annotated[str, Form(description="User prompt or question for the agent")],
+    # PRODUCTION: Core user query
+    message: Annotated[str, Form(description="[Production UI] User question or prompt for the agent")],
+    
+    # AUTH: Automatically extracted from 'Authorization: Bearer <token>' header
     user: Annotated[UserContext, Depends(get_user_context)],
-    previous_interaction_id: Annotated[Optional[str], Form(description="Optional: Interaction ID for continuing multi-turn chats")] = None,
-    file: Annotated[Optional[UploadFile], File(description="Admin-only: image, screenshot, pdf, or docx attachment")] = None,
+    
+    # PRODUCTION: Multi-turn chat memory pointer
+    previous_interaction_id: Annotated[Optional[str], Form(description="[Production UI] Thread ID from previous turn to maintain multi-turn chat context")] = None,
+    
+    # PRODUCTION (ADMIN-ONLY): Optional image or document attachment
+    file: Annotated[Optional[UploadFile], File(description="[Admin Feature] Optional attachment (image, pdf, docx) to inspect")] = None,
 ):
     # Sanitize previous_interaction_id (ignore empty values or Swagger UI placeholder "string")
     clean_interaction_id = None
@@ -60,11 +89,8 @@ async def chat_endpoint(
                 detail="File uploads to the agent are restricted to Supabase administrators only.",
             )
 
-        # 2. Magic-byte verification
-        detected_mime = await validate_file_magic_bytes(file)
-
-        # 3. Prepare Gemini content (inline base64 if < 5MB or Gemini File API if >= 5MB)
-        file_payload = await process_file_for_gemini(file, detected_mime, client)
+        # 2. Process uploaded file (magic-byte validation + Gemini preparation)
+        file_payload = await process_user_upload(file, client)
         user_input = [file_payload, {"type": "text", "text": message}]
     else:
         # Standard plain text input
@@ -82,7 +108,7 @@ async def chat_endpoint(
     return ChatResponse(
         status="success",
         user_type=user_type,
-        user_email=user.email,
+        user_email=user.email or user.username,
         interaction_id=new_interaction_id,
         response=response_text,
     )
