@@ -30,8 +30,9 @@ class Settings(BaseSettings):
         "http://localhost:5173",
     ]
 
-    # Official Production Flash Model: gemini-3.6-flash (1,500 requests/day, 15 req/min on free tier)
-    MODEL_NAME: str = "gemini-3.6-flash"
+    # Official Production Models (500 RPD each on Free Tier)
+    MODEL_NAME: str = "gemini-3.5-flash-lite"
+    FALLBACK_MODEL_NAME: str = "gemini-3.1-flash-lite"
     
     # File Limits & Thresholds
     INLINE_SIZE_LIMIT_BYTES: int = 5 * 1024 * 1024    # 5 MB (Inline bytes vs Gemini File API)
@@ -66,7 +67,6 @@ class Settings(BaseSettings):
         return [r.strip() for r in self.ADMIN_ROLES.split(",") if r.strip()]
 
 
-settings = Settings()
-
 # Automatically initializes Gemini client with API key from settings
+settings = Settings()
 client = genai.Client(api_key=settings.GEMINI_API_KEY.get_secret_value())

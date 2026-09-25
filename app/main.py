@@ -26,7 +26,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "Accept", "Origin", "X-Requested-With"],
 )
 
@@ -58,6 +58,10 @@ class ChatResponse(BaseModel):
     status: str = Field(
         "success",
         description="[REST Standard] HTTP response wrapper status string."
+    )
+    model: Optional[str] = Field(
+        None,
+        description="[REST Standard] Identifies which Gemini model generated the response."
     )
 
 
@@ -97,7 +101,7 @@ async def chat_endpoint(
         if not user.is_admin:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="File uploads to the agent are restricted to Supabase administrators only.",
+                detail="File uploads are restricted to administrators.",
             )
 
         # 2. Process uploaded file (magic-byte validation + Gemini preparation)
@@ -108,7 +112,7 @@ async def chat_endpoint(
         user_input = message
 
     # 4. Execute agent interactions loop
-    response_text, new_interaction_id = chat_with_agent(
+    response_text, new_interaction_id, model_used = chat_with_agent(
         user_input=user_input,
         is_admin=user.is_admin,
         last_interaction_id=clean_interaction_id,
@@ -122,4 +126,5 @@ async def chat_endpoint(
         user_email=user.email or user.username,
         interaction_id=new_interaction_id,
         response=response_text,
+        model=model_used,
     )
