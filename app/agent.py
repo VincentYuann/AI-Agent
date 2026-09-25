@@ -26,7 +26,7 @@ def chat_with_agent_stream(
         kwargs: Dict[str, Any] = {
             "model": settings.MODEL_NAME,
             "input": current_input,
-            "system_instruction": settings.SYSTEM_INSTRUCTION,
+            "system_instruction": settings.get_system_instruction(is_admin=is_admin),
             "generation_config": {"thinking_level": settings.THINKING_LEVEL},
             "store": True,
             "stream": True,
@@ -99,31 +99,35 @@ def chat_with_agent_stream(
 
         # Execute requested tools and prepare function_result inputs
         function_results = []
+        allowed_tool_names = {t["name"] for t in tools} if tools else set()
         for call in current_calls.values():
             func_name = call["name"]
             func_id = call["id"]
 
-            raw_args = call.get("raw_arguments", "")
-            if raw_args:
-                try:
-                    args = json.loads(raw_args)
-                except json.JSONDecodeError:
-                    args = {}
-            elif isinstance(call.get("arguments"), dict):
-                args = call["arguments"]
-            elif isinstance(call.get("arguments"), str) and call["arguments"]:
-                try:
-                    args = json.loads(call["arguments"])
-                except json.JSONDecodeError:
-                    args = {}
+            if func_name not in allowed_tool_names:
+                result_content = f"Unauthorized: Tool '{func_name}' is not permitted for your current access level."
             else:
-                args = {}
+                raw_args = call.get("raw_arguments", "")
+                if raw_args:
+                    try:
+                        args = json.loads(raw_args)
+                    except json.JSONDecodeError:
+                        args = {}
+                elif isinstance(call.get("arguments"), dict):
+                    args = call["arguments"]
+                elif isinstance(call.get("arguments"), str) and call["arguments"]:
+                    try:
+                        args = json.loads(call["arguments"])
+                    except json.JSONDecodeError:
+                        args = {}
+                else:
+                    args = {}
 
-            func = TOOL_FUNCTIONS.get(func_name)
-            if not func:
-                result_content = f"Function {func_name} not found"
-            else:
-                result_content = func(**args)
+                func = TOOL_FUNCTIONS.get(func_name)
+                if not func:
+                    result_content = f"Function {func_name} not found"
+                else:
+                    result_content = func(**args)
 
             # If tool returned a single text content block, unwrap to plain text for Interactions API
             if isinstance(result_content, list) and len(result_content) == 1 and isinstance(result_content[0], dict) and result_content[0].get("type") == "text":

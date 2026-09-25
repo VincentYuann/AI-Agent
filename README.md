@@ -72,17 +72,27 @@ flowchart TD
 - `get_vincent_info`: Fetches authoritative, real-time context about Vincent from the portfolio database (cached in memory).
 - `get_resume`: Extracts and serves Vincent's official resume document text.
 - `get_champ_tier_list`: Multimodal asset loader serving the League of Legends champion tier list graphic.
+- `execute_supabase_sql`: *(Admin Only)* Generates and executes validated, safe PostgreSQL statements directly against Vincent's Supabase database to add, update, or edit portfolio tables.
 
-### 4. Gemini Interactions API & Real-Time SSE Streaming
+### 4. Admin Database Copilot & Semantic SQL Generation
+- **Document & Text Understanding**: Ingests uploaded resumes (PDF), project screenshots/images, and plain-text instructions to synthesize database operations.
+- **1-to-1 Field Preservation**: Any field explicitly specified by the admin is matched 1-to-1 verbatim without unauthorized rewriting.
+- **Intelligent Semantic Inference**: For omitted fields, the agent infers appropriate, high-quality values matching Vincent's portfolio aesthetic:
+  - *Projects*: Thematic Japanese kanji (e.g. `創`, `智`, `基`, `迅`, `墨`), tech stacks array, bullet points, and active/completed status labels.
+  * *Experience*: UUIDs via `gen_random_uuid()`, kanji, uppercase 2-5 letter subtitle codes (`AI`, `CRAFT`, `SYS`), and JSONB bullets/tags.
+- **Zero Management Token Threat**: Operates with **zero personal access tokens (`sbp_...`)**. Queries are executed via the native PostgreSQL RPC function `public.execute_admin_sql` through the standard Supabase Data API authenticated by the admin's Supabase Auth JWT.
+- **Instant Frontend Reflection**: Successful mutations invalidate the backend RAM cache and fire Supabase Realtime CDC events (`postgres_changes` on `schema: public`), updating the portfolio React UI in real-time.
+
+### 5. Gemini Interactions API & Real-Time SSE Streaming
 - **Model**: Powered by **`gemini-3.5-flash-lite`** with configurable thinking level for high-throughput, low-latency conversational reasoning.
 - **Real-Time SSE Streaming**: Supports Server-Sent Events (`stream=true`) streaming individual token deltas, tool invocation statuses, and completion events.
 - **Stateful Multi-Turn Conversations**: Chains context using `previous_interaction_id` to maintain ongoing conversations without resending chat histories.
 
-### 5. Role-Based Access Control & Strict Security
+### 6. Role-Based Access Control & Strict 3-Layer Security
+- **Layer 1: Prompt & Tool Isolation**: Non-admin visitors receive `GUEST_SYSTEM_INSTRUCTION` with zero exposure of database schemas, and `execute_supabase_sql` is completely omitted from Gemini's tool schema.
+- **Layer 2: Server-Side Tool Whitelist & Safety Guardrails**: `app/agent.py` validates that invoked tools match the user's authorized toolset. `app/db_service.py` blocks dangerous DDL (`DROP`, `TRUNCATE`, `ALTER`), system schema access, and unbounded deletes.
+- **Layer 3: Database-Level RLS Enforcement**: Inside PostgreSQL, `public.execute_admin_sql` checks `auth.jwt() ->> 'email' = 'vincentyuan1020@gmail.com'`. Unauthorized users are rejected at the database level.
 - **Stateless Supabase Authentication**: Validates tokens using either asymmetric JWKS (ES256/RS256) or symmetric secret (HS256).
-- **SSRF & Issuer Injection Protection**: PyJWKClient strictly trusts the server-configured `SUPABASE_URL` rather than untrusted unverified payload `iss` headers.
-- **Admin Privileges**: Only verified administrators (configured in `.env` by email or GitHub username) are permitted to upload attachments or inspect cache telemetry.
-- **Universal Raw Byte Pipeline**: Uploaded attachments undergo 8KB magic-byte verification (with deep ZIP container inspection for DOCX) and stream directly to the Gemini Files API via `io.BytesIO` without writing temporary files to disk.
 - **CORS Protection**: Locked to explicit portfolio origin domains (`settings.ALLOWED_ORIGINS`).
 
 ---
@@ -97,20 +107,24 @@ AI Agent/
 ├── pyproject.toml                # Project metadata & pytest configuration
 ├── uv.lock                       # Deterministic dependency lockfile
 ├── README.md                     # Architecture & operations documentation
-├── assets/                       # Static assets
+├── assets/                       # Static assets & database migration scripts
 │   ├── Vincent_Yuan_Resume.pdf   # Resume source document
-│   └── champ_tier_list.webp      # Tier list infographic
+│   ├── champ_tier_list.webp      # Tier list infographic
+│   ├── get_portfolio_ai_context.sql # Read aggregation RPC migration
+│   └── execute_admin_sql.sql     # Safe admin database execution RPC
 ├── tests/                        # Automated test suite
 │   ├── __init__.py
-│   └── test_portfolio_cache.py   # Caching, tools, webhook, and auth tests
+│   ├── test_portfolio_cache.py   # Caching, tools, webhook, and auth tests
+│   └── test_sql_admin.py         # SQL safety, role isolation & RPC execution tests
 └── app/
     ├── __init__.py
-    ├── config.py                 # Centralized settings & Pydantic models
+    ├── config.py                 # Settings, Pydantic models & role-isolated system prompts
     ├── security.py               # Supabase JWT decoding, JWKS & RBAC guards
-    ├── portfolio_service.py      # Thread-safe server cache & Supabase REST client
+    ├── db_service.py             # Safe SQL validation & Supabase PostgREST RPC dispatcher
+    ├── portfolio_service.py      # Thread-safe server cache & Supabase RPC client
     ├── files.py                  # Magic-byte security & Gemini file streaming
-    ├── tools.py                  # Agent tool definitions & cached asset loaders
-    ├── agent.py                  # Gemini Interactions API loop & SSE streaming
+    ├── tools.py                  # Agent tool definitions, schemas & cached asset loaders
+    ├── agent.py                  # Gemini Interactions API loop, tool whitelist & SSE streaming
     └── main.py                   # FastAPI app, chat endpoint & webhook handlers
 ```
 
