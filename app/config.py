@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: SecretStr
     SUPABASE_JWT_SECRET: SecretStr
     SUPABASE_URL: Optional[str] = None
+    SUPABASE_ANON_KEY: Optional[SecretStr] = None
+    SUPABASE_WEBHOOK_SECRET: Optional[SecretStr] = None
 
     # Dynamic Admin Verification (Configured exclusively via .env, never hardcoded in code)
     ADMIN_EMAILS: Union[List[str], str] = ""
@@ -30,9 +32,9 @@ class Settings(BaseSettings):
         "http://localhost:5173",
     ]
 
-    # Official Production Models (500 RPD each on Free Tier)
+    # Production Model (500 RPD on Free Tier)
     MODEL_NAME: str = "gemini-3.5-flash-lite"
-    FALLBACK_MODEL_NAME: str = "gemini-3.1-flash-lite"
+    THINKING_LEVEL: str = "low"  # Internal thinking level: "low" or "medium"
     
     # File Limits & Thresholds
     INLINE_SIZE_LIMIT_BYTES: int = 5 * 1024 * 1024    # 5 MB (Inline bytes vs Gemini File API)
@@ -40,8 +42,10 @@ class Settings(BaseSettings):
 
     SYSTEM_INSTRUCTION: str = (
         "You are a helpful portfolio assistant for Vincent Yuan. "
-        "When answering questions about Vincent Yuan, his education, skills, projects, or work experience, "
-        "use the resume tool if not already in context. "
+        "When answering questions about Vincent Yuan, his background, projects, work experience, education, "
+        "technical skills, engineering philosophy, origin story, or hobbies, "
+        "use the get_vincent_info tool if not already present in the conversation context. "
+        "You can also use the get_resume tool for detailed formal resume content. "
         "When answering questions about League of Legends tier lists or champion recommendations, "
         "use the champion tier list tool if not already loaded, "
         "and give specific champion names and reasoning based on the tier list. "

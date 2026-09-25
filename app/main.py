@@ -1,11 +1,15 @@
-from typing import Annotated, Optional
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Form
+import json
+import hmac
+from typing import Annotated, Optional, Union, Any
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Form, Header, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from .config import settings, client
 from .security import get_user_context, UserContext
-from .agent import chat_with_agent
+from .agent import chat_with_agent, chat_with_agent_stream
 from .files import process_user_upload
+from .portfolio_service import invalidate_portfolio_cache, get_cache_status
 
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -72,10 +76,11 @@ def health_check():
         "service": settings.PROJECT_NAME,
         "environment": settings.ENVIRONMENT,
         "model": settings.MODEL_NAME,
+        "thinking_level": settings.THINKING_LEVEL,
     }
 
 
-@app.post("/api/v1/chat", response_model=ChatResponse)
+@app.post("/api/v1/chat", response_model=Union[ChatResponse, Any])
 async def chat_endpoint(
     # PRODUCTION: Core user query
     message: Annotated[str, Form(description="[Production UI] User question or prompt for the agent")],
@@ -88,6 +93,9 @@ async def chat_endpoint(
     
     # PRODUCTION (ADMIN-ONLY): Optional image or document attachment
     file: Annotated[Optional[UploadFile], File(description="[Admin Feature] Optional attachment (image, pdf, docx) to inspect")] = None,
+
+    # PRODUCTION: Real-time streaming flag
+    stream: Annotated[bool, Form(description="[Streaming] Stream response deltas in real-time via Server-Sent Events (SSE)")] = False,
 ):
     # Sanitize previous_interaction_id (ignore empty values or Swagger UI placeholder "string")
     clean_interaction_id = None
@@ -111,14 +119,35 @@ async def chat_endpoint(
         # Standard plain text input
         user_input = message
 
-    # 4. Execute agent interactions loop
+    user_type = "Admin" if user.is_admin else ("Logged-in User" if user.is_authenticated else "Guest")
+
+    # 3. Stream real-time tokens via Server-Sent Events (SSE) if requested
+    if stream:
+        def event_generator():
+            yield f"data: {json.dumps({'type': 'init', 'user_type': user_type, 'model': settings.MODEL_NAME})}\n\n"
+            for event in chat_with_agent_stream(
+                user_input=user_input,
+                is_admin=user.is_admin,
+                last_interaction_id=clean_interaction_id,
+            ):
+                yield f"data: {json.dumps(event)}\n\n"
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    # 4. Standard synchronous execution loop
     response_text, new_interaction_id, model_used = chat_with_agent(
         user_input=user_input,
         is_admin=user.is_admin,
         last_interaction_id=clean_interaction_id,
     )
-
-    user_type = "Admin" if user.is_admin else ("Logged-in User" if user.is_authenticated else "Guest")
 
     return ChatResponse(
         status="success",
@@ -128,3 +157,101 @@ async def chat_endpoint(
         response=response_text,
         model=model_used,
     )
+
+
+# =============================================================================
+# SUPABASE DATABASE WEBHOOK CACHE INVALIDATION
+# =============================================================================
+class WebhookInvalidateResponse(BaseModel):
+    status: str
+    message: str
+    table: Optional[str] = None
+    event_type: Optional[str] = None
+    invalidated_at: float
+    was_cached: bool
+
+
+class CacheStatusResponse(BaseModel):
+    is_cached: bool
+    cached_at: Optional[float] = None
+    age_seconds: Optional[float] = None
+    content_length_chars: int = 0
+
+
+@app.post(
+    "/api/v1/webhook/supabase-invalidate",
+    response_model=WebhookInvalidateResponse,
+    tags=["Webhooks"],
+    summary="[Supabase Webhook] Invalidate server cache on database changes",
+)
+async def supabase_webhook_invalidate(
+    request: Request,
+    x_webhook_secret: Annotated[Optional[str], Header(alias="X-Webhook-Secret")] = None,
+    authorization: Annotated[Optional[str], Header(alias="Authorization")] = None,
+):
+    """
+    Receives database change events directly from Supabase Database Webhooks.
+    Automatically invalidates the server-side in-memory portfolio context cache
+    upon INSERT, UPDATE, or DELETE on portfolio tables.
+    """
+    expected_secret = settings.SUPABASE_WEBHOOK_SECRET.get_secret_value() if settings.SUPABASE_WEBHOOK_SECRET else None
+    if not expected_secret:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Webhook secret is not configured on server.",
+        )
+
+    provided_secret = None
+    if x_webhook_secret:
+        provided_secret = x_webhook_secret.strip()
+    elif authorization:
+        parts = authorization.strip().split()
+        if len(parts) == 2 and parts[0].lower() == "bearer":
+            provided_secret = parts[1]
+        else:
+            provided_secret = authorization.strip()
+
+    if not provided_secret or not hmac.compare_digest(provided_secret, expected_secret):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized: invalid webhook secret.",
+        )
+
+    table_name = None
+    event_type = None
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            table_name = body.get("table")
+            event_type = body.get("type")
+    except Exception:
+        pass
+
+    inv_result = invalidate_portfolio_cache()
+
+    return WebhookInvalidateResponse(
+        status="success",
+        message="Portfolio cache invalidated via Supabase database webhook.",
+        table=table_name,
+        event_type=event_type,
+        invalidated_at=inv_result["invalidated_at"],
+        was_cached=inv_result["was_cached"],
+    )
+
+
+@app.get(
+    "/api/v1/admin/cache/status",
+    response_model=CacheStatusResponse,
+    tags=["Cache Management"],
+    summary="[Admin] Inspect server-side cache status",
+)
+def cache_status(
+    user: Annotated[UserContext, Depends(get_user_context)],
+):
+    """Inspects the current server cache state (cached_at timestamp, age, size)."""
+    if not user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only administrators are authorized to inspect cache status.",
+        )
+    return CacheStatusResponse(**get_cache_status())

@@ -46,8 +46,7 @@ def decode_supabase_jwt(token: str) -> Optional[Dict[str, Any]]:
         alg = unverified_header.get("alg", "HS256")
 
         if alg in ["ES256", "RS256"]:
-            unverified_payload = jwt.decode(token, options={"verify_signature": False})
-            issuer = settings.SUPABASE_URL or unverified_payload.get("iss")
+            issuer = settings.SUPABASE_URL
             if not issuer:
                 return None
             jwks_client = _get_jwks_client(issuer)

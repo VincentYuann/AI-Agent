@@ -1,94 +1,85 @@
-# Vincent Yuan AI Agent Backend
+# Vincent Yuan AI Agent Microservice
 
-A production-grade, secure **FastAPI** backend powering an AI portfolio assistant and multimodal document analyzer using the **Google Gemini Interactions API**, **Supabase JWT Authentication**, and **Role-Based Access Control (RBAC)**.
-
----
-
-## 🏛️ Architecture Evolution: Initial vs. Current Refactored Design
-
-### The Initial Design & Vulnerabilities (First Conversation Analysis)
-In our initial implementation, file handling and validation suffered from critical security loopholes, code duplication, and unnecessary disk overhead:
-
-1. **Extension-Based Word Bypass (`.docx` / `.doc`)**:
-   ```python
-   # INSECURE LEGACY CODE:
-   ext = Path(file.filename or "").suffix.lower()
-   if ext == ".docx":
-       detected_mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-   ```
-   Because `filetype.guess()` struggled with small header buffers, this fallback blindly trusted the user-supplied file extension. An attacker could rename `malware.exe` or an executable script to `exploit.docx` and bypass all magic-byte verification.
-2. **Untrusted Client Header Fallback**:
-   If magic-byte sniffing returned `None`, the system fell back to `file.content_type`. Since HTTP `Content-Type` headers are arbitrarily set by the client, spoofed headers completely defeated the purpose of magic-byte verification.
-3. **Insufficient Header Inspection Buffer**:
-   Inspecting only 512–2048 bytes was too small to reliably detect ZIP metadata (`[Content_Types].xml`, `word/document.xml`) and OLE2 compound document structures, causing false negatives.
-4. **Unnecessary Disk I/O & Temp Files**:
-   Files $\ge$ 5MB were written to disk via `tempfile.gettempdir()`, uploaded to the Gemini Files API, and deleted via `finally: temp_file.unlink()`. This introduced unnecessary disk writes, race conditions, and filesystem cleanup dependencies.
-5. **Code Duplication & Scattered Responsibilities**:
-   Local asset loaders (such as `_load_champ_tier_list_base64` in `tools.py`) manually read bytes, converted them to base64, and hand-crafted payload structures, duplicating logic already implemented in `files.py`.
-6. **Polymorphic Complexity & `isinstance` Branching**:
-   Early refactor attempts accepted `Union[bytes, Path]`, forcing runtime `isinstance` type-sniffing, awkward variable state tracking (`file_bytes = None`), and disconnected size verifications.
+A production-grade, secure **FastAPI** backend powering Vincent Yuan's portfolio AI companion and multimodal document analyzer. Built with the **Google Gemini Interactions API**, **Supabase JWT Authentication**, **Thread-Safe In-Memory Caching**, and **Automated Supabase Database Webhook Cache Invalidation**.
 
 ---
 
-### The Modern Refactored Architecture (Current Design)
-
-The backend now enforces strict **Separation of Concerns** with a **Universal Raw Byte Pipeline**:
+## 🏛️ System Architecture
 
 ```mermaid
 flowchart TD
-    subgraph Untrusted External Path
-        Upload[UploadFile via HTTP POST] --> ReadBytes[await file.read]
-        ReadBytes --> Val[1. Security & Validation Guard\n8KB filetype check + ZIP inspection for DOCX]
-        Val -->|Invalid / Spoofed| Err[HTTP 415 / 413 Error]
-        Val -->|Valid bytes + verified MIME| Prepare[2. Universal Gemini Payload Engine\nprepare_gemini_content]
+    subgraph Frontend Client
+        ChatUI[Portfolio Chat UI\nAiChatWidget]
     end
 
-    subgraph Trusted Internal Path
-        Local[Local Asset on Disk\nPath.read_bytes] --> Cache[In-Memory LRU Cache\n@lru_cache]
-        Cache --> Prepare
+    subgraph Supabase Cloud
+        SupaDB[(PostgreSQL Database\nprofile, projects, experience, pillars)]
+        SupaAuth[Supabase Auth\nJWT Signing & JWKS]
+        SupaWebhook[Database Webhook Trigger\nINSERT / UPDATE / DELETE]
     end
 
-    subgraph Transport Routing
-        Prepare --> SizeCheck{File Size}
-        SizeCheck -->|<= 5MB| Inline[Inline Base64 Payload\nZero Google API upload latency]
-        SizeCheck -->|> 5MB| Stream[In-Memory Streaming via io.BytesIO\nclient.files.upload - Zero Disk I/O]
+    subgraph AI Agent FastAPI Service
+        Router[FastAPI Application / Routers]
+        SecGuard[Security & Auth Guard\nJWT Verification & Role Allowlist]
+        Cache[(Thread-Safe In-Memory Cache\nthreading.Lock + Timestamped)]
+        PortService[Portfolio Service\nSupabase Concurrent REST Client & YAML Generator]
+        Tools[Agent Tools\nget_vincent_info, get_resume, get_champ_tier_list]
+        AgentEngine[Gemini Agent Loop\nInteractions API + SSE Streaming]
     end
 
-    Inline --> Gemini[Gemini Interactions API]
-    Stream --> Gemini
+    subgraph Google Gemini
+        Gemini[Google Gemini 3.5 Flash-Lite\nMultimodal & Function Calling]
+    end
+
+    ChatUI -->|POST /api/v1/chat + JWT| Router
+    Router --> SecGuard
+    SecGuard -.->|Verify ES256 via JWKS| SupaAuth
+    SecGuard --> AgentEngine
+
+    AgentEngine -->|Calls tool if context needed| Tools
+    Tools -->|get_vincent_info| Cache
+    Cache -->|Cache Miss| PortService
+    PortService -->|Concurrent REST Query| SupaDB
+    Cache -->|Cache Hit| Tools
+
+    Tools -->|Function Results| AgentEngine
+    AgentEngine <-->|Interactions API & Streaming| Gemini
+    AgentEngine -->|SSE Stream / JSON Response| ChatUI
+
+    SupaWebhook -->|POST /api/v1/webhook/supabase-invalidate\nX-Webhook-Secret| Router
+    Router -->|Clear in-memory cache| Cache
 ```
-
-#### Key Architecture Principles:
-* **Universal Data Model (`bytes`)**: Everything standardizes on raw `file_bytes: bytes`. No polymorphic type checks or `isinstance` branches.
-* **Direct In-Memory Streaming**: Google GenAI SDK's `client.files.upload()` natively accepts `io.BytesIO`. Files are streamed directly to the Gemini Files API from RAM without touching the server's disk or requiring temp directories.
-* **Unified Size Engine**: A single pipeline verifies against the 50MB ceiling (`MAX_FILE_SIZE_BYTES`, raising `HTTP 413`) and routes payloads $\le$ 5MB (`INLINE_SIZE_LIMIT_BYTES`) to Base64 vs. $>$ 5MB to Google Files API.
-* **Strict Separation of Concerns**:
-  * **Security Guard (`validate_upload_magic_bytes`)**: Exclusively defends untrusted HTTP uploads using 8KB magic-byte analysis via `filetype` plus deep ZIP inspection for Office packages.
-  * **Payload Adapter (`prepare_gemini_content`)**: Pure transport formatting used universally by both uploads and local assets.
-* **Zero Boilerplate in Tools**: Local assets (`tools.py`) simply read their bytes and delegate directly to `prepare_gemini_content()`, caching the final Gemini payload in memory with `@lru_cache`.
 
 ---
 
 ## 🌟 Key Features
 
-### 1. Modern FastAPI Service
-* **Decoupled Architecture**: Modular REST API with full OpenAPI / Swagger UI documentation (`/docs`).
-* **Modular Codebase**:
-  * `app/config.py`: Centralized type-safe configuration via `pydantic-settings`.
-  * `app/security.py`: Stateless Supabase JWT verification and dynamic admin role checking.
-  * `app/files.py`: Universal in-memory bytes pipeline, magic-byte inspection, and hybrid file routing.
-  * `app/tools.py`: In-memory cached portfolio tools (`get_resume`, `get_champ_tier_list`).
-  * `app/agent.py`: Google GenAI Interactions API execution engine with multi-turn conversation and function-calling loop.
-  * `app/main.py`: FastAPI application factory, health check, and endpoints.
+### 1. Live Portfolio Knowledge Base & Thread-Safe Caching
+- **Real-Time Context (`app/portfolio_service.py`)**: Gathers live portfolio data concurrently across `profile` (bio, headlines, capabilities, Hanko card, origin story, hobbies), `projects` (tech stacks, architecture overviews, bullets, links), `experience` (career trajectory, milestones), and `philosophy_pillars`.
+- **Structured YAML Synthesis**: Compiles and prunes live database records into a dense, token-efficient YAML document providing authoritative knowledge to the Gemini model with ~20% token savings over verbose Markdown.
+- **In-Memory Cache**: Thread-safe caching with `threading.Lock()` guarantees sub-millisecond context retrieval for subsequent turns without hitting external database quotas or incurring redundant latency.
 
-### 2. Role-Based Security & Supabase Auth
-* **Public / Guest Access**: Anyone can chat with the assistant via text to ask about Vincent's experience, skills, education, and portfolio.
-* **Admin-Only Features**: File uploads (images, screenshots, PDFs, Word docs) and elevated tool access are strictly restricted to authenticated Supabase Administrators (identified via JWT claims or configured admin emails).
-* **Swagger UI Integration**: Uses `HTTPBearer(auto_error=False)` allowing guests to test the API directly without 401 errors, while admins can authenticate using the green **Authorize** button in Swagger UI.
+### 2. Automated Supabase Database Webhooks
+- **Zero Frontend Overhead**: Cache invalidation is decoupled from frontend code and triggered automatically by Supabase Database Webhooks on `INSERT`, `UPDATE`, or `DELETE` events.
+- **Fail-Closed Security**: Endpoint (`POST /api/v1/webhook/supabase-invalidate`) enforces constant-time `hmac.compare_digest` validation against the configured `SUPABASE_WEBHOOK_SECRET` via `X-Webhook-Secret` or `Authorization: Bearer <secret>`.
+- **Instant Invalidation**: Once invalidation occurs, the next question automatically queries Supabase for the fresh database state and repopulates the cache.
 
-### 3. High-Throughput Model & Rate-Limit Resilience
-* Powered by **`gemini-3.6-flash`**, providing **1,500 free requests per day (RPD)** and **15 requests per minute (RPM)**.
-* Graceful HTTP `429 Too Many Requests` handling prevents server crashes or unhandled tracebacks.
+### 3. Agent Tool System (`app/tools.py`)
+- `get_vincent_info`: Fetches authoritative, real-time context about Vincent from the portfolio database (cached in memory).
+- `get_resume`: Extracts and serves Vincent's official resume document text.
+- `get_champ_tier_list`: Multimodal asset loader serving the League of Legends champion tier list graphic.
+
+### 4. Gemini Interactions API & Real-Time SSE Streaming
+- **Model**: Powered by **`gemini-3.5-flash-lite`** with configurable thinking level for high-throughput, low-latency conversational reasoning.
+- **Real-Time SSE Streaming**: Supports Server-Sent Events (`stream=true`) streaming individual token deltas, tool invocation statuses, and completion events.
+- **Stateful Multi-Turn Conversations**: Chains context using `previous_interaction_id` to maintain ongoing conversations without resending chat histories.
+
+### 5. Role-Based Access Control & Strict Security
+- **Stateless Supabase Authentication**: Validates tokens using either asymmetric JWKS (ES256/RS256) or symmetric secret (HS256).
+- **SSRF & Issuer Injection Protection**: PyJWKClient strictly trusts the server-configured `SUPABASE_URL` rather than untrusted unverified payload `iss` headers.
+- **Admin Privileges**: Only verified administrators (configured in `.env` by email or GitHub username) are permitted to upload attachments or inspect cache telemetry.
+- **Universal Raw Byte Pipeline**: Uploaded attachments undergo 8KB magic-byte verification (with deep ZIP container inspection for DOCX) and stream directly to the Gemini Files API via `io.BytesIO` without writing temporary files to disk.
+- **CORS Protection**: Locked to explicit portfolio origin domains (`settings.ALLOWED_ORIGINS`).
 
 ---
 
@@ -96,22 +87,27 @@ flowchart TD
 
 ```text
 AI Agent/
-├── .env.example              # Environment variables template
-├── .gitignore                # Git ignore rules (protects secrets & virtualenvs)
-├── Dockerfile                # Multi-stage container build with Python 3.13 & uv
-├── pyproject.toml            # Project dependencies & metadata
-├── uv.lock                   # Deterministic dependency lockfile
-├── assets/                   # Portfolio assets (Resume PDF, tier list image)
-│   ├── Vincent_Yuan_Resume.pdf
-│   └── champ_tier_list.webp
+├── .env.example                  # Environment variables template
+├── .gitignore                    # Secrets & cache ignore rules
+├── Dockerfile                    # Multi-stage production container build
+├── pyproject.toml                # Project metadata & pytest configuration
+├── uv.lock                       # Deterministic dependency lockfile
+├── README.md                     # Architecture & operations documentation
+├── assets/                       # Static assets
+│   ├── Vincent_Yuan_Resume.pdf   # Resume source document
+│   └── champ_tier_list.webp      # Tier list infographic
+├── tests/                        # Automated test suite
+│   ├── __init__.py
+│   └── test_portfolio_cache.py   # Caching, tools, webhook, and auth tests
 └── app/
     ├── __init__.py
-    ├── config.py             # Settings & Gemini Client initialization
-    ├── security.py           # Supabase JWT decoding & dynamic Admin verification
-    ├── files.py              # Universal bytes pipeline & magic-byte validation
-    ├── tools.py              # Cached local tools & tool schema definitions
-    ├── agent.py              # Gemini Interactions API loop & tool runner
-    └── main.py               # FastAPI app & POST /api/v1/chat endpoint
+    ├── config.py                 # Centralized settings & Pydantic models
+    ├── security.py               # Supabase JWT decoding, JWKS & RBAC guards
+    ├── portfolio_service.py      # Thread-safe server cache & Supabase REST client
+    ├── files.py                  # Magic-byte security & Gemini file streaming
+    ├── tools.py                  # Agent tool definitions & cached asset loaders
+    ├── agent.py                  # Gemini Interactions API loop & SSE streaming
+    └── main.py                   # FastAPI app, chat endpoint & webhook handlers
 ```
 
 ---
@@ -120,27 +116,40 @@ AI Agent/
 
 ### Prerequisites
 * Python `>= 3.13`
-* [`uv`](https://github.com/astral-sh/uv) (recommended fast package manager)
+* [`uv`](https://github.com/astral-sh/uv) (fast package and environment manager)
 
-### 1. Clone & Install Dependencies
+### 1. Installation
 ```bash
-git clone <your-repo-url>
-cd "AI Agent"
+git clone https://github.com/VincentYuann/AI-Agent.git
+cd AI-Agent
 uv sync
 ```
 
-### 2. Configure Environment Variables
-Copy `.env.example` to `.env` and fill in your keys:
+### 2. Environment Configuration
+Copy the template and configure your secrets:
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env`:
+Key environment variables in `.env`:
 ```env
+# Google Gemini API Key
 GEMINI_API_KEY=your_gemini_api_key_here
+
+# Supabase Auth & JWT
+SUPABASE_URL=https://<your-project-id>.supabase.co
 SUPABASE_JWT_SECRET=your_supabase_jwt_secret_here
+SUPABASE_ANON_KEY=your_supabase_anon_key_here
+
+# Webhook Secret for Database Cache Invalidation
+SUPABASE_WEBHOOK_SECRET=whsec_your_custom_secret_here
+
+# Admin Allowlist
 ADMIN_EMAILS=vincentyuan1020@gmail.com
+ADMIN_USERNAMES=vincentyuann
 ADMIN_ROLES=admin,service_role
+
+# Environment & Server
 ENVIRONMENT=development
 ```
 
@@ -149,12 +158,28 @@ ENVIRONMENT=development
 uv run uvicorn app.main:app --reload
 ```
 
-Server will be running at: `http://127.0.0.1:8000`
-Interactive API Docs (Swagger UI): `http://127.0.0.1:8000/docs`
+- API Base URL: `http://127.0.0.1:8000`
+- Interactive OpenAPI Docs (Swagger UI): `http://127.0.0.1:8000/docs`
 
 ---
 
-## 🧪 API Endpoints
+## 🧪 Testing Suite
+
+Run the full automated test suite using `uv`:
+
+```bash
+uv run pytest
+```
+
+Tests cover:
+* **Tool Registrations**: Validates that all users receive knowledge base tools and admin-only tools are appropriately controlled.
+* **Cache Lifecycle**: Validates cache hit consistency, timestamp preservation, and manual invalidation.
+* **Supabase Webhook Security**: Tests 401 unauthorized rejections on missing/wrong secrets, and 200 success on valid header/bearer tokens.
+* **Admin Telemetry Endpoint**: Ensures guest access to `GET /api/v1/admin/cache/status` is blocked (`403 Forbidden`) and accessible only to admins (`200 OK`).
+
+---
+
+## 📡 API Endpoints
 
 ### 1. Health Check
 `GET /`
@@ -163,29 +188,74 @@ Interactive API Docs (Swagger UI): `http://127.0.0.1:8000/docs`
   "status": "healthy",
   "service": "Vincent Yuan AI Agent Backend",
   "environment": "development",
-  "model": "gemini-3.6-flash"
+  "model": "gemini-3.5-flash-lite",
+  "thinking_level": "low"
 }
 ```
 
 ### 2. Chat with Agent
-`POST /api/v1/chat` (Content-Type: `multipart/form-data`)
+`POST /api/v1/chat` (`multipart/form-data`)
 
-**Form Fields:**
-* `message` *(required, string)*: The prompt or question.
-* `previous_interaction_id` *(optional, string)*: Interaction ID for stateful multi-turn conversations.
-* `file` *(optional, file upload, Admin only)*: Attached image, screenshot, PDF, or DOCX.
+| Parameter | Type | Required | Description |
+| :--- | :--- | :--- | :--- |
+| `message` | `string` | Yes | User prompt or question |
+| `previous_interaction_id` | `string` | No | ID from previous turn for continuing stateful conversation |
+| `stream` | `boolean` | No | If `true`, returns a Server-Sent Events (SSE) stream of tokens |
+| `file` | `file` | No | *(Admin only)* Attached image, screenshot, PDF, or Word document |
 
-**Responses:**
-* `200 OK`: Successful response containing `user_type`, `interaction_id`, and `response`.
-* `403 Forbidden`: Returned when a guest or non-admin attempts to upload a file.
-* `415 Unsupported Media Type`: Returned if an uploaded file fails magic-byte validation or is spoofed.
-* `429 Too Many Requests`: Returned when Google API quota limits are reached.
+### 3. Supabase Webhook Cache Invalidation
+`POST /api/v1/webhook/supabase-invalidate`
+
+- **Headers**: `X-Webhook-Secret: <your_secret>` or `Authorization: Bearer <your_secret>`
+- **Payload**: Standard Supabase database webhook JSON payload (containing `type`, `table`, `record`).
+- **Response**:
+  ```json
+  {
+    "status": "success",
+    "message": "Portfolio cache invalidated via Supabase database webhook.",
+    "table": "projects",
+    "event_type": "UPDATE",
+    "invalidated_at": 1727289600.0,
+    "was_cached": true
+  }
+  ```
+
+### 4. Admin Cache Status
+`GET /api/v1/admin/cache/status`
+
+- **Headers**: `Authorization: Bearer <admin_jwt>`
+- **Response**:
+  ```json
+  {
+    "is_cached": true,
+    "cached_at": 1727289600.0,
+    "age_seconds": 42.5,
+    "content_length_chars": 5832
+  }
+  ```
+
+---
+
+## ⚡ Supabase Database Webhook Setup
+
+When deploying to Google Cloud Run (or using a local tunnel like ngrok/Cloudflare Tunnel):
+
+1. Open your **Supabase Dashboard** $\rightarrow$ **Database** $\rightarrow$ **Webhooks**.
+2. Click **Create a new webhook**.
+3. Set the following parameters:
+   - **Name**: `invalidate-portfolio-ai-cache`
+   - **Table**: Select tables `profile`, `projects`, `experience`, `philosophy_pillars`.
+   - **Events**: Check `Insert`, `Update`, and `Delete`.
+   - **Webhook Type**: `HTTP Request`
+   - **HTTP Method**: `POST`
+   - **URL**: `https://<YOUR-CLOUD-RUN-URL>/api/v1/webhook/supabase-invalidate`
+   - **HTTP Headers**:
+     - `X-Webhook-Secret`: `<SUPABASE_WEBHOOK_SECRET>`
+4. Save the webhook. Whenever portfolio content is modified, the cache will automatically invalidate.
 
 ---
 
 ## 🐳 Docker Deployment
-
-Build and run using Docker:
 
 ```bash
 docker build -t vincent-ai-agent .
@@ -195,8 +265,9 @@ docker run -p 8000:8000 --env-file .env vincent-ai-agent
 ---
 
 ## 🔒 Security Summary
-* Secrets are loaded via `pydantic-settings` using `SecretStr` to prevent accidental logging.
-* JWT validation strictly enforces the HMAC-SHA256 signature algorithm against `SUPABASE_JWT_SECRET`.
-* Strict 8KB magic-byte verification with ZIP structure validation prevents MIME-type and extension spoofing.
-* In-memory `io.BytesIO` streams eliminate lingering temporary files and disk traversal attacks.
-* No sensitive API keys or credentials are committed to version control.
+
+* **Secrets Management**: Loaded exclusively through `pydantic-settings` using `SecretStr` to protect credentials against accidental logging.
+* **JWT Integrity**: Cryptographically verifies Supabase Access Tokens with audience enforcement (`authenticated`).
+* **SSRF Guard**: Strict JWKS resolution pinned to configured project URL.
+* **Upload Defense**: 8KB magic-byte verification with ZIP internal structure validation against spoofed file extensions.
+* **Zero Disk Storage**: In-memory `io.BytesIO` streams eliminate lingering temporary files and filesystem traversal vectors.

@@ -9,10 +9,12 @@ dependencies = [
     "fastapi>=0.141.1",
     "filetype>=1.2.0",
     "google-genai>=2.24.0",
+    "httpx>=0.28.1",
     "pydantic-settings>=2.15.0",
     "pyjwt>=2.15.0",
     "pypdf>=6.19.0",
     "python-multipart>=0.0.32",
+    "pyyaml>=6.0.3",
     "uvicorn>=0.53.0",
 ]
 
@@ -21,3 +23,7 @@ dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
