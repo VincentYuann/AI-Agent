@@ -51,6 +51,15 @@ FORBIDDEN_SCHEMAS = [
 ]
 
 
+# SQL reserved keywords and clause identifiers that should not be parsed as table names
+SQL_RESERVED_WORDS: Set[str] = {
+    "set", "select", "where", "values", "from", "join", "into", "update",
+    "default", "returning", "on", "conflict", "do", "nothing", "all",
+    "distinct", "only", "null", "case", "when", "then", "else", "end",
+    "order", "group", "by", "having", "limit", "offset", "table", "as",
+}
+
+
 def validate_safe_sql(sql: str) -> Optional[str]:
     """
     Validates that the provided SQL query satisfies security and safety rules.
@@ -76,9 +85,13 @@ def validate_safe_sql(sql: str) -> Optional[str]:
             return "Security violation: Queries referencing system, auth, or internal tables are blocked."
 
     # 3. Prevent unconditioned destructive DELETE statements
-    delete_matches = re.finditer(r"\bDELETE\s+FROM\s+([a-zA-Z0-9_]+)", cleaned_sql, re.IGNORECASE)
+    delete_matches = re.finditer(
+        r"\bDELETE\s+FROM\s+(?:\"?([a-zA-Z0-9_]+)\"?\s*\.\s*)?\"?([a-zA-Z0-9_]+)\"?",
+        cleaned_sql,
+        re.IGNORECASE,
+    )
     for m in delete_matches:
-        tbl = m.group(1).lower()
+        tbl = (m.group(2) or m.group(1)).lower()
         start_idx = m.end()
         end_idx = cleaned_sql.find(";", start_idx)
         clause = cleaned_sql[start_idx:end_idx] if end_idx != -1 else cleaned_sql[start_idx:]
@@ -86,13 +99,29 @@ def validate_safe_sql(sql: str) -> Optional[str]:
             return f"Safety guardrail: Unbounded DELETE on table '{tbl}' without a WHERE clause is strictly prohibited."
 
     # 4. Verify that table operations only target allowed tables
-    target_matches = re.findall(
-        r"\b(?:FROM|UPDATE|INTO|JOIN)\s+([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)?)",
+    target_tables = set()
+
+    # Match FROM, INTO, JOIN targets (with optional schema qualification and quotes)
+    for m in re.finditer(
+        r"\b(?:FROM|INTO|JOIN)\s+(?:\"?([a-zA-Z0-9_]+)\"?\s*\.\s*)?\"?([a-zA-Z0-9_]+)\"?",
         cleaned_sql,
         re.IGNORECASE,
-    )
-    for target in target_matches:
-        clean_target = target.lower().split(".")[-1]
+    ):
+        tbl = (m.group(2) or m.group(1)).lower()
+        if tbl not in SQL_RESERVED_WORDS:
+            target_tables.add(tbl)
+
+    # Match UPDATE targets (excluding DO UPDATE in ON CONFLICT upsert clauses)
+    for m in re.finditer(
+        r"(?<!\bDO\s)\bUPDATE\s+(?:ONLY\s+)?(?:\"?([a-zA-Z0-9_]+)\"?\s*\.\s*)?\"?([a-zA-Z0-9_]+)\"?",
+        cleaned_sql,
+        re.IGNORECASE,
+    ):
+        tbl = (m.group(2) or m.group(1)).lower()
+        if tbl not in SQL_RESERVED_WORDS:
+            target_tables.add(tbl)
+
+    for clean_target in target_tables:
         if clean_target not in ALLOWED_TABLES:
             return f"Access restricted: Table '{clean_target}' is not in the allowed portfolio tables whitelist ({', '.join(sorted(ALLOWED_TABLES))})."
 

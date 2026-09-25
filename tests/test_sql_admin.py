@@ -112,6 +112,30 @@ def test_validate_safe_sql_blocks_unauthorized_tables():
     assert "Access restricted" in err
 
 
+def test_validate_safe_sql_upsert_and_schema_qualification():
+    # PostgreSQL UPSERT with ON CONFLICT ... DO UPDATE SET must not treat 'SET' as a table
+    upsert_sql = """
+    INSERT INTO public.projects (id, title)
+    VALUES ($$test-upsert$$, $$Test Upsert$$)
+    ON CONFLICT (id) DO UPDATE SET
+        title = EXCLUDED.title,
+        updated_at = NOW();
+    """
+    assert validate_safe_sql(upsert_sql) is None
+
+    # DELETE with schema qualification and WHERE clause
+    assert validate_safe_sql("DELETE FROM public.experience WHERE id = 'test-id';") is None
+
+    # Unbounded DELETE with schema qualification should be blocked and report 'experience'
+    err = validate_safe_sql("DELETE FROM public.experience;")
+    assert err is not None
+    assert "Unbounded DELETE on table 'experience'" in err
+
+    # Quoted identifiers
+    assert validate_safe_sql('UPDATE "experience" SET title = $$Barista$$ WHERE id = $$1$$;') is None
+    assert validate_safe_sql('SELECT * FROM "public"."projects" WHERE id = $$1$$;') is None
+
+
 # =============================================================================
 # 2. TOOL ACCESS & ROLE-BASED VISIBILITY TESTS
 # =============================================================================
