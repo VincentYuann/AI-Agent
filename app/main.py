@@ -7,6 +7,8 @@ from .security import get_user_context, UserContext
 from .agent import chat_with_agent
 from .files import process_user_upload
 
+from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI(
     title=settings.PROJECT_NAME,
     description=(
@@ -17,6 +19,15 @@ app = FastAPI(
         "To test as an Admin in this Swagger UI, click the **Authorize** button at the top right and paste your Supabase JWT."
     ),
     version="1.0.0",
+)
+
+# Enable CORS strictly for Vincent's portfolio frontends
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "Origin", "X-Requested-With"],
 )
 
 

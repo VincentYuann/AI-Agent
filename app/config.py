@@ -24,6 +24,12 @@ class Settings(BaseSettings):
     ADMIN_USERNAMES: Union[List[str], str] = ""
     ADMIN_ROLES: Union[List[str], str] = "admin,service_role"
 
+    # CORS Allowed Origins
+    ALLOWED_ORIGINS: List[str] = [
+        "https://vincentyuann.github.io",
+        "http://localhost:5173",
+    ]
+
     # Official Production Flash Model: gemini-3.6-flash (1,500 requests/day, 15 req/min on free tier)
     MODEL_NAME: str = "gemini-3.6-flash"
     
