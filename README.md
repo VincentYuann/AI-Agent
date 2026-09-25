@@ -76,14 +76,17 @@ flowchart TD
 
 ### 4. Admin Database Copilot & Semantic SQL Generation
 - **Document & Text Understanding**: Ingests uploaded resumes (PDF), project screenshots/images, and plain-text instructions to synthesize database operations.
-- **Strict Resume Upsert Guardrails (No Unsolicited Deletions)**:
-  - When asked to "upsert", "update", or "sync" with a resume, the agent ONLY inserts new items or updates existing matching items.
-  - **Never deletes unmentioned records**: Roles omitted from a resume (e.g., service industry or barista roles like Kung Fu Tea) are preserved intact unless the admin explicitly issues a direct command containing the word "delete" or "remove".
-- **Domain Identity Protection**: Preserves authentic domain entities (e.g. Vincent's barista/cashier role at Kung Fu Tea in `experience`) and prevents hallucinating real-world service jobs into software engineering projects.
+- **Strict Resume Upsert Guardrails (Non-Destructive & Additive)**:
+  - When asked to "upsert", "update", or "sync" with a resume or document, the agent ONLY inserts new items or updates existing matching items.
+  - **Never deletes unmentioned records**: Roles omitted from a tailored resume (e.g., service, retail, or earlier positions) are preserved intact unless the admin explicitly issues a direct command containing the word "delete" or "remove".
+- **Semantic Entity Classification & Anti-Hallucination**:
+  - Employers, workplaces, and commercial companies are routed to the `experience` table.
+  - Software applications, repositories, and tools are routed to the `projects` table.
+  - Strictly prevents fabricating fictional tech stacks, architectures, or engineering pipelines for non-technical or real-world workplaces.
 - **1-to-1 Field Preservation**: Any field explicitly specified by the admin is matched 1-to-1 verbatim without unauthorized rewriting.
 - **Intelligent Semantic Inference**: For omitted fields, the agent infers appropriate, high-quality values matching Vincent's portfolio aesthetic:
   - *Projects*: Thematic Japanese kanji (e.g. `創`, `智`, `基`, `迅`, `墨`), `text[]` arrays (`ARRAY[...]::text[]`), bullet points, and active/completed status labels.
-  - *Experience*: UUIDs via `gen_random_uuid()`, kanji, uppercase 2-5 letter subtitle codes (`AI`, `CRAFT`, `TEA`, `SYS`), and `jsonb` bullets/tags (`'["..."]'::jsonb`).
+  - *Experience*: UUIDs via `gen_random_uuid()`, kanji, uppercase 2-5 letter subtitle codes (`AI`, `CRAFT`, `SYS`), and `jsonb` bullets/tags (`'["..."]'::jsonb`).
 - **PostgreSQL Array & JSONB Type Standards**: Eliminates bare bracket `[...]` syntax errors by strictly enforcing `ARRAY[...]::text[]` for `projects` and `'[...]':jsonb` for `experience`.
 - **Zero Management Token Threat**: Operates with **zero personal access tokens (`sbp_...`)**. Queries are executed via the native PostgreSQL RPC function `public.execute_admin_sql` through the standard Supabase Data API authenticated by the admin's Supabase Auth JWT.
 - **Instant Frontend Reflection**: Successful mutations invalidate the backend RAM cache and fire Supabase Realtime CDC events (`postgres_changes` on `schema: public`), updating the portfolio React UI in real-time.
