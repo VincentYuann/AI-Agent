@@ -21,13 +21,11 @@ _cached_at: Optional[float] = None
 
 async def fetch_from_supabase_async() -> str:
     """
-    Fetches the comprehensive portfolio knowledge base from Supabase.
+    Fetches the comprehensive portfolio knowledge base directly from the Supabase RPC
+    function `get_portfolio_ai_context`.
     
-    Primary Path: Calls the high-performance Postgres RPC `get_portfolio_ai_context`,
-    which filters unneeded fields (IDs, timestamps, heavy image URLs) directly inside the database engine.
-    
-    Fallback Path: If the RPC is not yet registered in Supabase, falls back to concurrent
-    PostgREST table queries with explicit column selection.
+    All field exclusion, relationship aggregation, and heavy asset stripping occur
+    exclusively inside PostgreSQL, returning an AI-ready JSON payload that is dumped into YAML.
     """
     supabase_url = (settings.SUPABASE_URL or "").rstrip("/")
     if not supabase_url:
@@ -46,60 +44,10 @@ async def fetch_from_supabase_async() -> str:
     base_rest_url = f"{supabase_url}/rest/v1"
 
     async with httpx.AsyncClient(base_url=base_rest_url, headers=headers, timeout=12.0) as client:
-        # 1. Primary: Single RPC call to get_portfolio_ai_context
-        try:
-            rpc_res = await client.post("/rpc/get_portfolio_ai_context")
-            if rpc_res.status_code == 200:
-                payload = rpc_res.json()
-                logger.info("Successfully fetched AI context via Supabase RPC 'get_portfolio_ai_context'.")
-                return yaml.dump(payload, sort_keys=False, allow_unicode=True, width=120)
-            elif rpc_res.status_code == 404:
-                logger.info("Supabase RPC 'get_portfolio_ai_context' not found. Falling back to multi-table PostgREST queries.")
-            else:
-                logger.warning(
-                    f"Supabase RPC returned HTTP {rpc_res.status_code}: {rpc_res.text}. Falling back to multi-table PostgREST queries."
-                )
-        except Exception as e:
-            logger.warning(f"Error calling get_portfolio_ai_context RPC: {e}. Falling back to multi-table PostgREST queries.")
-
-        # 2. Fallback: Concurrent queries across canonical tables
-        r_prof, r_proj, r_exp, r_phil = await asyncio.gather(
-            client.get(
-                "/profile?select=name,role,headline,tagline,email,github,linkedin,hanko_card,capability_pillars,origin_story,hobbies&id=eq.1"
-            ),
-            client.get(
-                "/projects?select=title,subtitle,category,badge,kanji,status_label,is_active,is_featured,tech_stacks,overview,bullets,start_date,end_date,github_link,live_link&order=display_order.asc"
-            ),
-            client.get(
-                "/experience?select=title,company,location,start_date,end_date,is_active,status_label,domain_label,kanji,kanji_subtitle,tags,overview,bullets&order=display_order.asc"
-            ),
-            client.get(
-                "/philosophy_pillars?select=kanji,romaji,title,tag,description&order=position.asc"
-            ),
-        )
-        r_prof.raise_for_status()
-        r_proj.raise_for_status()
-        r_exp.raise_for_status()
-        r_phil.raise_for_status()
-
-        profile_row = (r_prof.json() or [{}])[0]
-        # In fallback, strip heavy images and displayOrder from hobbies if present
-        if isinstance(profile_row.get("hobbies"), list):
-            clean_hobbies = []
-            for h in profile_row["hobbies"]:
-                if isinstance(h, dict):
-                    clean_hobbies.append({k: v for k, v in h.items() if k not in ("images", "displayOrder", "id")})
-                else:
-                    clean_hobbies.append(h)
-            profile_row["hobbies"] = clean_hobbies
-
-        payload = {
-            "candidate": "Vincent Yuan",
-            "profile": profile_row,
-            "projects": r_proj.json() or [],
-            "experience": r_exp.json() or [],
-            "philosophy": r_phil.json() or [],
-        }
+        res = await client.post("/rpc/get_portfolio_ai_context")
+        res.raise_for_status()
+        payload = res.json()
+        logger.info("Successfully fetched AI context via Supabase RPC 'get_portfolio_ai_context'.")
         return yaml.dump(payload, sort_keys=False, allow_unicode=True, width=120)
 
 

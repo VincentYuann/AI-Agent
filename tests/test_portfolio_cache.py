@@ -30,6 +30,60 @@ def create_mock_jwt(email: str, username: str = "") -> str:
     return jwt.encode(payload, secret, algorithm="HS256")
 
 
+MOCK_PORTFOLIO_YAML = """candidate: Vincent Yuan
+profile:
+  name: Vincent Yuan
+  role: Software & Generative AI Engineer
+  headline: Crafting thoughtful digital experiences with algorithmic clarity.
+  email: vincentyuan1020@gmail.com
+projects:
+  - title: Sumi-OS
+    overview: Aesthetic terminal workspace.
+experience:
+  - company: Freelance
+    title: Systems Engineer
+philosophy:
+  - title: Simplicity
+"""
+
+
+@pytest.fixture(autouse=True)
+def mock_supabase_fetch(monkeypatch):
+    monkeypatch.setattr("app.portfolio_service.fetch_from_supabase", lambda: MOCK_PORTFOLIO_YAML)
+
+
+@pytest.mark.asyncio
+async def test_fetch_from_supabase_async_rpc(monkeypatch):
+    from app.portfolio_service import fetch_from_supabase_async
+    import httpx
+
+    mock_payload = {
+        "candidate": "Vincent Yuan",
+        "profile": {"name": "Vincent Yuan"},
+        "projects": [{"title": "Sumi-OS"}],
+        "experience": [],
+        "philosophy": [],
+    }
+
+    class MockResponse:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self): return mock_payload
+
+    class MockAsyncClient:
+        def __init__(self, *args, **kwargs): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): pass
+        async def post(self, url, **kwargs):
+            assert url == "/rpc/get_portfolio_ai_context"
+            return MockResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", MockAsyncClient)
+    yaml_result = await fetch_from_supabase_async()
+    assert "candidate: Vincent Yuan" in yaml_result
+    assert "Sumi-OS" in yaml_result
+
+
 def test_tool_registration_for_roles():
     guest_tools = [t["name"] for t in get_agent_tools(is_admin=False)]
     assert "get_vincent_info" in guest_tools
