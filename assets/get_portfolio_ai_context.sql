@@ -97,7 +97,6 @@ BEGIN
             'end_date', e.end_date,
             'is_active', e.is_active,
             'status_label', e.status_label,
-            'domain_label', e.domain_label,
             'kanji', e.kanji,
             'kanji_subtitle', e.kanji_subtitle,
             'tags', to_jsonb(e.tags),
