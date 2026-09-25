@@ -22,7 +22,7 @@ flowchart TD
         Router[FastAPI Application / Routers]
         SecGuard[Security & Auth Guard\nJWT Verification & Role Allowlist]
         Cache[(Thread-Safe In-Memory Cache\nthreading.Lock + Timestamped)]
-        PortService[Portfolio Service\nSupabase Concurrent REST Client & YAML Generator]
+        PortService[Portfolio Service\nSupabase RPC Client & YAML Generator]
         Tools[Agent Tools\nget_vincent_info, get_resume, get_champ_tier_list]
         AgentEngine[Gemini Agent Loop\nInteractions API + SSE Streaming]
     end
@@ -39,7 +39,7 @@ flowchart TD
     AgentEngine -->|Calls tool if context needed| Tools
     Tools -->|get_vincent_info| Cache
     Cache -->|Cache Miss| PortService
-    PortService -->|Concurrent REST Query| SupaDB
+    PortService -->|Single RPC Call /rpc/get_portfolio_ai_context| SupaDB
     Cache -->|Cache Hit| Tools
 
     Tools -->|Function Results| AgentEngine
@@ -54,10 +54,14 @@ flowchart TD
 
 ## 🌟 Key Features
 
-### 1. Live Portfolio Knowledge Base & Thread-Safe Caching
-- **Real-Time Context (`app/portfolio_service.py`)**: Gathers live portfolio data concurrently across `profile` (bio, headlines, capabilities, Hanko card, origin story, hobbies), `projects` (tech stacks, architecture overviews, bullets, links), `experience` (career trajectory, milestones), and `philosophy_pillars`.
-- **Structured YAML Synthesis**: Compiles and prunes live database records into a dense, token-efficient YAML document providing authoritative knowledge to the Gemini model with ~20% token savings over verbose Markdown.
-- **In-Memory Cache**: Thread-safe caching with `threading.Lock()` guarantees sub-millisecond context retrieval for subsequent turns without hitting external database quotas or incurring redundant latency.
+### 1. Live Portfolio Knowledge Base & Database-Level Filtering
+- **High-Performance PostgreSQL RPC (`get_portfolio_ai_context`)**: Retrieves Vincent's complete portfolio profile (`profile`, `projects`, `experience`, `philosophy_pillars`) in a single round-trip HTTP POST call to `/rest/v1/rpc/get_portfolio_ai_context`.
+- **Database-Level Field Pruning (Zero Leakage & Byte Efficiency)**:
+  - **Excludes Unneeded Metadata**: Strips internal primary keys (`id`), timestamps (`created_at`, `updated_at`), and sorting indexes before payload transmission.
+  - **Excludes Heavy Binary / Image URLs**: Omit project cover screenshots and employer logos that waste LLM tokens.
+  - **JSONB Key Stripping**: Uses Postgres JSONB operators (`h - 'images' - 'displayOrder' - 'id'`) to prune heavy image galleries from `hobbies` in-engine.
+- **Dense YAML Serialization**: Directly converts PostgreSQL's aggregated JSON into clean YAML with `sort_keys=False, allow_unicode=True`, maximizing LLM context comprehension while reducing token count by ~20% compared to Markdown.
+- **Thread-Safe In-Memory Cache**: Serves responses via double-checked `threading.Lock()` caching, ensuring instantaneous context provision for subsequent chat turns with sub-millisecond retrieval.
 
 ### 2. Automated Supabase Database Webhooks
 - **Zero Frontend Overhead**: Cache invalidation is decoupled from frontend code and triggered automatically by Supabase Database Webhooks on `INSERT`, `UPDATE`, or `DELETE` events.
@@ -153,7 +157,13 @@ ADMIN_ROLES=admin,service_role
 ENVIRONMENT=development
 ```
 
-### 3. Run the Development Server
+### 3. Database Setup: Create Supabase SQL RPC Function
+Execute the SQL migration script located in [`assets/get_portfolio_ai_context.sql`](assets/get_portfolio_ai_context.sql) inside your **Supabase Dashboard -> SQL Editor**:
+- Navigates to **SQL Editor** -> **New Query**.
+- Paste the contents of `assets/get_portfolio_ai_context.sql` and click **Run**.
+- This creates `public.get_portfolio_ai_context()` which aggregates and filters profile data directly inside PostgreSQL.
+
+### 4. Run the Development Server
 ```bash
 uv run uvicorn app.main:app --reload
 ```
@@ -172,6 +182,7 @@ uv run pytest
 ```
 
 Tests cover:
+* **RPC Context Ingestion**: Tests that `fetch_from_supabase_async` invokes `/rpc/get_portfolio_ai_context` and produces valid YAML.
 * **Tool Registrations**: Validates that all users receive knowledge base tools and admin-only tools are appropriately controlled.
 * **Cache Lifecycle**: Validates cache hit consistency, timestamp preservation, and manual invalidation.
 * **Supabase Webhook Security**: Tests 401 unauthorized rejections on missing/wrong secrets, and 200 success on valid header/bearer tokens.
