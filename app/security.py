@@ -16,6 +16,9 @@ _jwks_clients: Dict[str, PyJWKClient] = {}
 
 def _get_jwks_client(issuer: str) -> PyJWKClient:
     clean_iss = issuer.rstrip("/")
+    # Supabase JWKS endpoint is always under /auth/v1/.well-known/jwks.json
+    if not clean_iss.endswith("/auth/v1"):
+        clean_iss = f"{clean_iss}/auth/v1"
     if clean_iss not in _jwks_clients:
         jwks_url = f"{clean_iss}/.well-known/jwks.json"
         _jwks_clients[clean_iss] = PyJWKClient(jwks_url)
@@ -63,7 +66,8 @@ def decode_supabase_jwt(token: str) -> Optional[Dict[str, Any]]:
             algorithms=["HS256"],
             audience="authenticated",
         )
-    except Exception:
+    except Exception as e:
+        print(f"[SECURITY] JWT decode failed: {type(e).__name__} - {e}")
         return None
 
 
@@ -78,10 +82,10 @@ async def get_user_context(
         return UserContext(is_authenticated=False, is_admin=False)
 
     user_id = payload.get("sub")
-    email = (payload.get("email") or "").strip().lower()
     user_meta = payload.get("user_metadata") or {}
     app_meta = payload.get("app_metadata") or {}
 
+    email = (payload.get("email") or user_meta.get("email") or "").strip().lower()
     username = (user_meta.get("user_name") or user_meta.get("preferred_username") or "").strip().lower()
     role = (app_meta.get("role") or payload.get("role") or "").strip()
 
