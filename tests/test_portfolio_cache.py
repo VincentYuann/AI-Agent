@@ -88,14 +88,14 @@ def test_tool_registration_for_roles():
     guest_tools = [t["name"] for t in get_agent_tools(is_admin=False)]
     assert "get_vincent_info" in guest_tools
     assert "get_resume" in guest_tools
-    assert "get_champ_tier_list" in guest_tools
+    assert "get_champ_tier_list" not in guest_tools
     # AI cache invalidation tool is intentionally omitted since cache invalidation is automated via webhooks
     assert "invalidate_portfolio_cache" not in guest_tools
 
     admin_tools = [t["name"] for t in get_agent_tools(is_admin=True)]
     assert "get_vincent_info" in admin_tools
     assert "get_resume" in admin_tools
-    assert "get_champ_tier_list" in admin_tools
+    assert "get_champ_tier_list" not in admin_tools
     assert "invalidate_portfolio_cache" not in admin_tools
 
 

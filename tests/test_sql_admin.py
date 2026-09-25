@@ -146,7 +146,7 @@ def test_admin_tool_visibility():
     guest_tool_names = [t["name"] for t in guest_tools]
     assert "get_vincent_info" in guest_tool_names
     assert "get_resume" in guest_tool_names
-    assert "get_champ_tier_list" in guest_tool_names
+    assert "get_champ_tier_list" not in guest_tool_names
     assert "execute_supabase_sql" not in guest_tool_names
 
     # Admin tools

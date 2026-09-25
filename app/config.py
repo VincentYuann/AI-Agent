@@ -49,9 +49,7 @@ class Settings(BaseSettings):
         "skills, engineering philosophy, origin story, or personal hobbies, "
         "always ground your answers in the live portfolio knowledge base by calling the get_vincent_info tool if not already loaded in context.\n"
         "2. Use the get_resume tool when asked for detailed or formal resume contents.\n"
-        "3. When answering questions about League of Legends tier lists or champion recommendations, "
-        "use the champion tier list tool if not already loaded, and provide specific champion names and reasoning.\n"
-        "4. Keep your responses clear, authentic, and reflective of Vincent's artisanal, high-performance systems engineering perspective."
+        "3. Keep your responses clear, authentic, and reflective of Vincent's artisanal, high-performance systems engineering perspective."
     )
 
     ADMIN_SYSTEM_INSTRUCTION: str = (

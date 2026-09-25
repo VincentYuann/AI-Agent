@@ -23,7 +23,7 @@ flowchart TD
         SecGuard[Security & Auth Guard\nJWT Verification & Role Allowlist]
         Cache[(Thread-Safe In-Memory Cache\nthreading.Lock + Timestamped)]
         PortService[Portfolio Service\nSupabase RPC Client & YAML Generator]
-        Tools[Agent Tools\nget_vincent_info, get_resume, get_champ_tier_list]
+        Tools[Agent Tools\nget_vincent_info, get_resume]
         AgentEngine[Gemini Agent Loop\nInteractions API + SSE Streaming]
     end
 
@@ -71,7 +71,6 @@ flowchart TD
 ### 3. Agent Tool System (`app/tools.py`)
 - `get_vincent_info`: Fetches authoritative, real-time context about Vincent from the portfolio database (cached in memory).
 - `get_resume`: Extracts and serves Vincent's official resume document text.
-- `get_champ_tier_list`: Multimodal asset loader serving the League of Legends champion tier list graphic.
 - `execute_supabase_sql`: *(Admin Only)* Generates and executes validated, safe PostgreSQL statements directly against Vincent's Supabase database to add, update, or edit portfolio tables.
 
 ### 4. Admin Database Copilot & Semantic SQL Generation
@@ -117,7 +116,6 @@ AI Agent/
 ├── README.md                     # Architecture & operations documentation
 ├── assets/                       # Static assets & database migration scripts
 │   ├── Vincent_Yuan_Resume.pdf   # Resume source document
-│   ├── champ_tier_list.webp      # Tier list infographic
 │   ├── get_portfolio_ai_context.sql # Read aggregation RPC migration
 │   └── execute_admin_sql.sql     # Safe admin database execution RPC
 ├── tests/                        # Automated test suite
