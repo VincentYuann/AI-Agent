@@ -143,7 +143,7 @@ def test_validate_safe_sql_upsert_and_schema_qualification():
 def test_admin_tool_visibility():
     # Guest / Non-admin tools
     guest_tools = get_agent_tools(is_admin=False)
-    guest_tool_names = [t["name"] for t in guest_tools]
+    guest_tool_names = [t.get("name") for t in guest_tools if "name" in t]
     assert "get_vincent_info" in guest_tool_names
     assert "get_resume" in guest_tool_names
     assert "get_champ_tier_list" not in guest_tool_names
@@ -151,7 +151,7 @@ def test_admin_tool_visibility():
 
     # Admin tools
     admin_tools = get_agent_tools(is_admin=True)
-    admin_tool_names = [t["name"] for t in admin_tools]
+    admin_tool_names = [t.get("name") for t in admin_tools if "name" in t]
     assert "execute_supabase_sql" in admin_tool_names
     assert "execute_supabase_sql" in TOOL_FUNCTIONS
 
@@ -226,8 +226,38 @@ async def test_execute_supabase_sql_async_postgres_error(monkeypatch):
 def test_non_admin_cannot_access_sql_tool():
     # Regular authenticated user (logged in, but not in admin list)
     guest_tools = get_agent_tools(is_admin=False)
-    assert not any(t["name"] == "execute_supabase_sql" for t in guest_tools)
+    assert not any(t.get("name") == "execute_supabase_sql" for t in guest_tools)
 
     # Admin user
     admin_tools = get_agent_tools(is_admin=True)
-    assert any(t["name"] == "execute_supabase_sql" for t in admin_tools)
+    assert any(t.get("name") == "execute_supabase_sql" for t in admin_tools)
+
+
+def test_validate_safe_sql_allows_descriptions_with_sql_keywords():
+    # AST parser must not trigger false positives when forbidden words appear in string literals
+    sql_with_keywords = """
+    UPDATE projects 
+    SET overview = $$Architected and helped CREATE an automated ETL system that helped DROP response times$$,
+        updated_at = NOW() 
+    WHERE id = $$sumi-os$$;
+    """
+    assert validate_safe_sql(sql_with_keywords) is None
+
+
+def test_admin_token_propagation_from_context():
+    from app.security import admin_token_context
+    from app.db_service import get_admin_bearer_token
+
+    # 1. When context has a verified bearer token, it must be returned directly
+    test_token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.test.active"
+    token_reset = admin_token_context.set(test_token)
+    try:
+        resolved = get_admin_bearer_token()
+        assert resolved == test_token
+    finally:
+        admin_token_context.reset(token_reset)
+
+    # 2. When no context exists (e.g. standalone test/CLI), it uses explicit fallback
+    fallback = get_admin_bearer_token()
+    assert fallback is not None
+    assert len(fallback) > 20

@@ -6,7 +6,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from .config import settings, client
-from .security import get_user_context, UserContext
+from .security import get_user_context, UserContext, admin_token_context
 from .agent import chat_with_agent, chat_with_agent_stream
 from .files import process_user_upload
 from .portfolio_service import invalidate_portfolio_cache, get_cache_status
@@ -82,11 +82,11 @@ def health_check():
 
 @app.post("/api/v1/chat", response_model=Union[ChatResponse, Any])
 async def chat_endpoint(
-    # PRODUCTION: Core user query
-    message: Annotated[str, Form(description="[Production UI] User question or prompt for the agent")],
-    
     # AUTH: Automatically extracted from 'Authorization: Bearer <token>' header
     user: Annotated[UserContext, Depends(get_user_context)],
+
+    # PRODUCTION: Core user query (optional if a file attachment is provided)
+    message: Annotated[Optional[str], Form(description="[Production UI] User question or prompt for the agent")] = None,
     
     # PRODUCTION: Multi-turn chat memory pointer
     previous_interaction_id: Annotated[Optional[str], Form(description="[Production UI] Thread ID from previous turn to maintain multi-turn chat context")] = None,
@@ -104,7 +104,12 @@ async def chat_endpoint(
         if val and val.lower() not in ["string", "none", "null", "undefined", ""]:
             clean_interaction_id = val
 
-    # 1. Security check for file uploads
+    # Propagate active admin session token to downstream database tools
+    if user.is_admin and user.raw_token:
+        admin_token_context.set(user.raw_token)
+
+    # 1. Security check and validation for file uploads and messages
+    clean_message = message.strip() if message else ""
     if file is not None:
         if not user.is_admin:
             raise HTTPException(
@@ -114,10 +119,16 @@ async def chat_endpoint(
 
         # 2. Process uploaded file (magic-byte validation + Gemini preparation)
         file_payload = await process_user_upload(file, client)
-        user_input = [file_payload, {"type": "text", "text": message}]
+        prompt_text = clean_message if clean_message else f"Please inspect and analyze the attached {file.filename or 'document'}."
+        user_input = [file_payload, {"type": "text", "text": prompt_text}]
     else:
         # Standard plain text input
-        user_input = message
+        if not clean_message:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Message cannot be empty.",
+            )
+        user_input = clean_message
 
     user_type = "Admin" if user.is_admin else ("Logged-in User" if user.is_authenticated else "Guest")
 

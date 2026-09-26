@@ -23,7 +23,8 @@ flowchart TD
         SecGuard[Security & Auth Guard\nJWT Verification & Role Allowlist]
         Cache[(Thread-Safe In-Memory Cache\nthreading.Lock + Timestamped)]
         PortService[Portfolio Service\nSupabase RPC Client & YAML Generator]
-        Tools[Agent Tools\nget_vincent_info, get_resume]
+        Tools[Agent Tools\nget_vincent_info, get_resume\nweb_search, url_context]
+        PromptEngine[Modular Prompt Engine\nprompts/*.md + lru_cache]
         AgentEngine[Gemini Agent Loop\nInteractions API + SSE Streaming]
     end
 
@@ -36,6 +37,7 @@ flowchart TD
     SecGuard -.->|Verify ES256 via JWKS| SupaAuth
     SecGuard --> AgentEngine
 
+    PromptEngine -->|Inject cached instructions| AgentEngine
     AgentEngine -->|Calls tool if context needed| Tools
     Tools -->|get_vincent_info| Cache
     Cache -->|Cache Miss| PortService
@@ -71,9 +73,22 @@ flowchart TD
 ### 3. Agent Tool System (`app/tools.py`)
 - `get_vincent_info`: Fetches authoritative, real-time context about Vincent from the portfolio database (cached in memory).
 - `get_resume`: Extracts and serves Vincent's official resume document text.
+- `web_search`: Live search tool providing real-world facts, current news, and documentation outside of the portfolio database.
+- `url_context`: Built-in Gemini tool enabling direct analysis and inspection of external web pages and GitHub repositories (e.g., `https://github.com/VincentYuann/portfolio`).
 - `execute_supabase_sql`: *(Admin Only)* Generates and executes validated, safe PostgreSQL statements directly against Vincent's Supabase database to add, update, or edit portfolio tables.
 
-### 4. Admin Database Copilot & Semantic SQL Generation
+### 4. Modular Prompt Architecture & Anti-Slop Style Guide (`prompts/`)
+- **Decoupled Prompt Management**: System prompts are cleanly extracted out of Python code into native Markdown files:
+  - `prompts/guest_instruction.md`: Visitor companion persona, live knowledge base grounding, and web search instructions.
+  - `prompts/admin_instruction.md`: Admin copilot persona, additive upsert policies, dollar-quoting PostgreSQL standards, and entity classification.
+  - `prompts/writing_style_guide.md`: Mandatory editorial anti-slop style guide.
+- **In-Memory Caching (`@lru_cache`)**: Prompts are loaded from disk once on demand and held in RAM, eliminating filesystem I/O overhead during chat interactions.
+- **Strict Anti-Slop Writing Mandate**:
+  - **Tone**: Prohibits editorializing (*"it's important to note"*), promotional hype (*"stunning"*, *"breathtaking"*, *"rich heritage"*), and conversational pleasantries/sign-offs (*"I hope this helps!"*, *"Let me know if..."*).
+  - **Structure**: Eliminates forced summary conclusions (*"In summary"*, *"Overall"*, *"In conclusion"*) and templated boilerplate.
+  - **Language**: Eliminates overused connectors and flagged AI vocabulary (*delve*, *underscore*, *boast*, *showcase*, *testament to*, *encompassing*, *valuable insight*, *key turning point*).
+
+### 5. Admin Database Copilot & Semantic SQL Generation
 - **Document & Text Understanding**: Ingests uploaded resumes (PDF), project screenshots/images, and plain-text instructions to synthesize database operations.
 - **Strict Resume Upsert Guardrails (Non-Destructive & Additive)**:
   - When asked to "upsert", "update", or "sync" with a resume or document, the agent ONLY inserts new items or updates existing matching items.
@@ -90,12 +105,12 @@ flowchart TD
 - **Zero Management Token Threat**: Operates with **zero personal access tokens (`sbp_...`)**. Queries are executed via the native PostgreSQL RPC function `public.execute_admin_sql` through the standard Supabase Data API authenticated by the admin's Supabase Auth JWT.
 - **Instant Frontend Reflection**: Successful mutations invalidate the backend RAM cache and fire Supabase Realtime CDC events (`postgres_changes` on `schema: public`), updating the portfolio React UI in real-time.
 
-### 5. Gemini Interactions API & Real-Time SSE Streaming
+### 6. Gemini Interactions API & Real-Time SSE Streaming
 - **Model**: Powered by **`gemini-3.5-flash-lite`** with configurable thinking level for high-throughput, low-latency conversational reasoning.
 - **Real-Time SSE Streaming**: Supports Server-Sent Events (`stream=true`) streaming individual token deltas, tool invocation statuses, and completion events.
 - **Stateful Multi-Turn Conversations**: Chains context using `previous_interaction_id` to maintain ongoing conversations without resending chat histories.
 
-### 6. Role-Based Access Control & Strict 3-Layer Security
+### 7. Role-Based Access Control & Strict 3-Layer Security
 - **Layer 1: Prompt & Tool Isolation**: Non-admin visitors receive `GUEST_SYSTEM_INSTRUCTION` with zero exposure of database schemas, and `execute_supabase_sql` is completely omitted from Gemini's tool schema.
 - **Layer 2: Server-Side Tool Whitelist & Safety Guardrails**: `app/agent.py` validates that invoked tools match the user's authorized toolset. `app/db_service.py` blocks dangerous DDL (`DROP`, `TRUNCATE`, `ALTER`), system schema access, and unbounded deletes.
 - **Layer 3: Database-Level RLS Enforcement**: Inside PostgreSQL, `public.execute_admin_sql` checks `auth.jwt() ->> 'email' = 'vincentyuan1020@gmail.com'`. Unauthorized users are rejected at the database level.
@@ -114,6 +129,11 @@ AI Agent/
 ├── pyproject.toml                # Project metadata & pytest configuration
 ├── uv.lock                       # Deterministic dependency lockfile
 ├── README.md                     # Architecture & operations documentation
+├── prompts/                      # Modular, cached prompt templates
+│   ├── admin_instruction.md      # Admin copilot persona & database upsert rules
+│   ├── guest_instruction.md      # Guest visitor companion persona & guidelines
+│   ├── writing_style_guide.md    # Editorial & anti-slop writing guidelines
+│   └── supabase_sql_tool_description.md # Supabase table schemas & SQL tool instructions
 ├── assets/                       # Static assets & database migration scripts
 │   ├── Vincent_Yuan_Resume.pdf   # Resume source document
 │   ├── get_portfolio_ai_context.sql # Read aggregation RPC migration
@@ -124,7 +144,7 @@ AI Agent/
 │   └── test_sql_admin.py         # SQL safety, role isolation & RPC execution tests
 └── app/
     ├── __init__.py
-    ├── config.py                 # Settings, Pydantic models & role-isolated system prompts
+    ├── config.py                 # Settings, Pydantic models & cached prompt loader
     ├── security.py               # Supabase JWT decoding, JWKS & RBAC guards
     ├── db_service.py             # Safe SQL validation & Supabase PostgREST RPC dispatcher
     ├── portfolio_service.py      # Thread-safe server cache & Supabase RPC client

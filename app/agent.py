@@ -22,7 +22,20 @@ def chat_with_agent_stream(
     current_input = user_input
     current_interaction_id = last_interaction_id
 
+    MAX_TOOL_TURNS = 6
+    turn_count = 0
+
     while True:
+        turn_count += 1
+        if turn_count > MAX_TOOL_TURNS:
+            yield {"type": "delta", "text": "\n\n[Interaction Limit: Maximum tool turns reached.]"}
+            yield {
+                "type": "done",
+                "interaction_id": current_interaction_id,
+                "model": settings.MODEL_NAME,
+            }
+            break
+
         kwargs: Dict[str, Any] = {
             "model": settings.MODEL_NAME,
             "input": current_input,
@@ -73,7 +86,7 @@ def chat_with_agent_stream(
                         yield {"type": "delta", "text": event.delta.text}
                     elif event.delta.type == "arguments_delta":
                         if event.index in current_calls:
-                            current_calls[event.index]["raw_arguments"] += event.delta.arguments
+                            current_calls[event.index]["raw_arguments"] += (event.delta.arguments or "")
                 elif event.event_type == "interaction.completed":
                     current_interaction_id = event.interaction.id
         except Exception as e:
@@ -99,7 +112,7 @@ def chat_with_agent_stream(
 
         # Execute requested tools and prepare function_result inputs
         function_results = []
-        allowed_tool_names = {t["name"] for t in tools} if tools else set()
+        allowed_tool_names = {t.get("name") for t in tools if isinstance(t, dict) and "name" in t} if tools else set()
         for call in current_calls.values():
             func_name = call["name"]
             func_id = call["id"]
@@ -127,7 +140,10 @@ def chat_with_agent_stream(
                 if not func:
                     result_content = f"Function {func_name} not found"
                 else:
-                    result_content = func(**args)
+                    try:
+                        result_content = func(**args)
+                    except Exception as exc:
+                        result_content = f"Error executing tool {func_name}: {exc}"
 
             # If tool returned a single text content block, unwrap to plain text for Interactions API
             if isinstance(result_content, list) and len(result_content) == 1 and isinstance(result_content[0], dict) and result_content[0].get("type") == "text":

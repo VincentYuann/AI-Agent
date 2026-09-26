@@ -1,14 +1,17 @@
 import asyncio
 import concurrent.futures
 import logging
-import re
 import time
 from typing import Optional, Dict, Any, Set
 import httpx
 import jwt
 
+import sqlglot
+from sqlglot import exp
+
 from .config import settings
 from .portfolio_service import invalidate_portfolio_cache
+from .security import admin_token_context
 
 logger = logging.getLogger(__name__)
 
@@ -21,122 +24,103 @@ ALLOWED_TABLES: Set[str] = {
     "resume_latex",
 }
 
-# Strictly forbidden SQL keywords and patterns for security
-FORBIDDEN_KEYWORDS = [
-    r"\bDROP\b",
-    r"\bTRUNCATE\b",
-    r"\bALTER\b",
-    r"\bGRANT\b",
-    r"\bREVOKE\b",
-    r"\bCREATE\b",
-    r"\bREPLACE\b",
-    r"\bEXECUTE\b",
-    r"\bCOPY\b",
-    r"\bVACUUM\b",
-    r"\bREINDEX\b",
-    r"\bSET\s+ROLE\b",
-    r"\bSET\s+SESSION\b",
-]
+ALLOWED_SCHEMAS: Set[str] = {"public", ""}
 
-# Forbidden schema and system table patterns
-FORBIDDEN_SCHEMAS = [
-    r"\bauth\.",
-    r"\bstorage\.",
-    r"\bvault\.",
-    r"\bextensions\.",
-    r"\bpg_catalog\.",
-    r"\bpg_",
-    r"\binformation_schema\.",
-    r"\bcontact_rate_limits\b",
-]
-
-
-# SQL reserved keywords and clause identifiers that should not be parsed as table names
-SQL_RESERVED_WORDS: Set[str] = {
-    "set", "select", "where", "values", "from", "join", "into", "update",
-    "default", "returning", "on", "conflict", "do", "nothing", "all",
-    "distinct", "only", "null", "case", "when", "then", "else", "end",
-    "order", "group", "by", "having", "limit", "offset", "table", "as",
+FORBIDDEN_COMMANDS = {
+    exp.Drop: "DROP",
+    exp.Alter: "ALTER",
+    exp.TruncateTable: "TRUNCATE",
+    exp.Create: "CREATE",
+    exp.Grant: "GRANT",
+    exp.Revoke: "REVOKE",
 }
 
 
 def validate_safe_sql(sql: str) -> Optional[str]:
     """
-    Validates that the provided SQL query satisfies security and safety rules.
+    Validates that the provided SQL query satisfies security and safety rules
+    using an AST parser (sqlglot) instead of brittle regexes.
     Returns None if valid, or an error string describing the violation.
     """
     if not sql or not sql.strip():
         return "SQL query cannot be empty."
 
     cleaned_sql = sql.strip()
-
     if len(cleaned_sql) > 50000:
         return "SQL query exceeds maximum allowed length (50,000 characters)."
 
-    # 1. Check for forbidden DDL / admin keywords
-    for pattern in FORBIDDEN_KEYWORDS:
-        if re.search(pattern, cleaned_sql, re.IGNORECASE):
-            keyword = pattern.replace(r"\b", "").strip()
-            return f"Security violation: The SQL statement contains forbidden command '{keyword}'."
+    try:
+        statements = sqlglot.parse(cleaned_sql, read="postgres")
+    except Exception as e:
+        return f"SQL parsing error: {e}"
 
-    # 2. Check for forbidden schemas and internal tables
-    for pattern in FORBIDDEN_SCHEMAS:
-        if re.search(pattern, cleaned_sql, re.IGNORECASE):
-            return "Security violation: Queries referencing system, auth, or internal tables are blocked."
+    if not statements or all(s is None for s in statements):
+        return "SQL query contains no valid statements."
 
-    # 3. Prevent unconditioned destructive DELETE statements
-    delete_matches = re.finditer(
-        r"\bDELETE\s+FROM\s+(?:\"?([a-zA-Z0-9_]+)\"?\s*\.\s*)?\"?([a-zA-Z0-9_]+)\"?",
-        cleaned_sql,
-        re.IGNORECASE,
-    )
-    for m in delete_matches:
-        tbl = (m.group(2) or m.group(1)).lower()
-        start_idx = m.end()
-        end_idx = cleaned_sql.find(";", start_idx)
-        clause = cleaned_sql[start_idx:end_idx] if end_idx != -1 else cleaned_sql[start_idx:]
-        if not re.search(r"\bWHERE\b", clause, re.IGNORECASE):
-            return f"Safety guardrail: Unbounded DELETE on table '{tbl}' without a WHERE clause is strictly prohibited."
+    for stmt in statements:
+        if stmt is None:
+            continue
 
-    # 4. Verify that table operations only target allowed tables
-    target_tables = set()
+        # 1. Block explicitly forbidden DDL / admin commands
+        for cls, name in FORBIDDEN_COMMANDS.items():
+            if isinstance(stmt, cls) or stmt.find(cls):
+                return f"Security violation: The SQL statement contains forbidden command '{name}'."
 
-    # Match FROM, INTO, JOIN targets (with optional schema qualification and quotes)
-    for m in re.finditer(
-        r"\b(?:FROM|INTO|JOIN)\s+(?:\"?([a-zA-Z0-9_]+)\"?\s*\.\s*)?\"?([a-zA-Z0-9_]+)\"?",
-        cleaned_sql,
-        re.IGNORECASE,
-    ):
-        tbl = (m.group(2) or m.group(1)).lower()
-        if tbl not in SQL_RESERVED_WORDS:
-            target_tables.add(tbl)
+        # 2. Block procedural commands (DO $$ ... $$), COPY, and raw administrative commands
+        if isinstance(stmt, exp.Command) or stmt.find(exp.Command):
+            return "Security violation: Procedural blocks, raw commands, and execution wrappers are prohibited."
 
-    # Match UPDATE targets (excluding DO UPDATE in ON CONFLICT upsert clauses)
-    for m in re.finditer(
-        r"(?<!\bDO\s)\bUPDATE\s+(?:ONLY\s+)?(?:\"?([a-zA-Z0-9_]+)\"?\s*\.\s*)?\"?([a-zA-Z0-9_]+)\"?",
-        cleaned_sql,
-        re.IGNORECASE,
-    ):
-        tbl = (m.group(2) or m.group(1)).lower()
-        if tbl not in SQL_RESERVED_WORDS:
-            target_tables.add(tbl)
+        if isinstance(stmt, exp.Copy) or stmt.find(exp.Copy):
+            return "Security violation: COPY statements are prohibited."
 
-    for clean_target in target_tables:
-        if clean_target not in ALLOWED_TABLES:
-            return f"Access restricted: Table '{clean_target}' is not in the allowed portfolio tables whitelist ({', '.join(sorted(ALLOWED_TABLES))})."
+        # 3. Whitelist: Statement must be SELECT, INSERT, UPDATE, or DELETE
+        if not isinstance(stmt, (exp.Select, exp.Insert, exp.Update, exp.Delete)):
+            return f"Security violation: Statement type '{stmt.key.upper()}' is not permitted. Only SELECT, INSERT, UPDATE, and DELETE are allowed."
+
+        # 4. Block unconditioned destructive DELETE statements
+        for del_node in stmt.find_all(exp.Delete):
+            if not del_node.args.get("where"):
+                tbl = del_node.this.name if del_node.this else "unknown"
+                return f"Safety guardrail: Unbounded DELETE on table '{tbl}' without a WHERE clause is strictly prohibited."
+
+        # 5. Check schemas and ensure query targets at least one allowed portfolio table
+        tbl_nodes = list(stmt.find_all(exp.Table))
+        if not tbl_nodes:
+            # Blocks table-less system function exploitation like SELECT pg_read_file(...)
+            return "Security violation: Query must target an explicit allowed portfolio table."
+
+        for tbl_node in tbl_nodes:
+            schema = (tbl_node.db or "").lower()
+            table = tbl_node.name.lower()
+
+            if schema and schema not in ALLOWED_SCHEMAS:
+                return "Security violation: Queries referencing system, auth, or internal tables are blocked."
+
+            if table and table not in ALLOWED_TABLES:
+                if table in {"contact_rate_limits"}:
+                    return "Security violation: Queries referencing system, auth, or internal tables are blocked."
+                return f"Access restricted: Table '{table}' is not in the allowed portfolio tables whitelist ({', '.join(sorted(ALLOWED_TABLES))})."
 
     return None
 
 
-def generate_admin_jwt(user_token: Optional[str] = None) -> str:
+def get_admin_bearer_token(admin_token: Optional[str] = None) -> str:
     """
-    Returns an authorized admin token.
-    If an existing user token is provided and valid, it is used.
-    Otherwise, generates a short-lived, signed admin JWT using the server's SUPABASE_JWT_SECRET.
+    Retrieves an authorized admin bearer token for Supabase PostgREST RPC.
+    
+    1. Primary (Production): Uses the active admin user's verified bearer token
+       propagated from the incoming HTTP request context.
+    2. Explicit Fallback (Tests / CLI): If running outside an active HTTP request
+       (e.g., during automated pytest runs or standalone CLI scripts), generates a
+       short-lived server-signed token using SUPABASE_JWT_SECRET.
     """
-    if user_token and user_token.strip():
-        return user_token.strip()
+    # 1. Check for token passed explicitly or active in request context
+    active_token = admin_token or admin_token_context.get()
+    if active_token and active_token.strip():
+        return active_token.strip()
 
+    # 2. Explicit Fallback for automated test suites or CLI maintenance scripts
+    logger.debug("[DB AUTH] No active request bearer token found. Generating signed server token for test/CLI execution.")
     admin_email = settings.admin_emails_list[0] if settings.admin_emails_list else "vincentyuan1020@gmail.com"
     payload = {
         "sub": "ai-agent-admin-session",
@@ -147,6 +131,10 @@ def generate_admin_jwt(user_token: Optional[str] = None) -> str:
     }
     secret = settings.SUPABASE_JWT_SECRET.get_secret_value()
     return jwt.encode(payload, secret, algorithm="HS256")
+
+
+# Backward compatibility alias
+generate_admin_jwt = get_admin_bearer_token
 
 
 async def execute_supabase_sql_async(sql: str, admin_token: Optional[str] = None) -> Dict[str, Any]:
@@ -180,7 +168,7 @@ async def execute_supabase_sql_async(sql: str, admin_token: Optional[str] = None
             "message": "SUPABASE_ANON_KEY is not configured on the server.",
         }
 
-    token = generate_admin_jwt(admin_token)
+    token = get_admin_bearer_token(admin_token)
 
     headers = {
         "apikey": anon_key,
@@ -205,9 +193,14 @@ async def execute_supabase_sql_async(sql: str, admin_token: Optional[str] = None
                         "message": error_msg,
                     }
 
-                # Check if query was a mutation (INSERT, UPDATE, DELETE)
-                upper_sql = sql.strip().upper()
-                is_mutation = any(upper_sql.startswith(cmd) or f" {cmd} " in upper_sql for cmd in ["INSERT", "UPDATE", "DELETE"])
+                # Check if query was a mutation (INSERT, UPDATE, DELETE) using AST
+                try:
+                    parsed_stmts = sqlglot.parse(sql, read="postgres")
+                    is_mutation = any(isinstance(s, (exp.Insert, exp.Update, exp.Delete)) for s in parsed_stmts if s)
+                except Exception:
+                    upper_sql = sql.strip().upper()
+                    is_mutation = any(upper_sql.startswith(cmd) or f" {cmd} " in upper_sql for cmd in ["INSERT", "UPDATE", "DELETE"])
+
                 if is_mutation:
                     logger.info("Database mutation detected. Invalidating server portfolio RAM cache...")
                     invalidate_portfolio_cache()
@@ -246,6 +239,8 @@ def execute_supabase_sql(sql: str, admin_token: Optional[str] = None) -> Dict[st
     Thread-safe synchronous bridge for execute_supabase_sql_async.
     Supports execution inside or outside existing asyncio event loops.
     """
+    # Capture the active request context token in the calling thread before thread delegation
+    resolved_token = admin_token or admin_token_context.get()
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -253,5 +248,5 @@ def execute_supabase_sql(sql: str, admin_token: Optional[str] = None) -> Dict[st
 
     if loop and loop.is_running():
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            return executor.submit(lambda: asyncio.run(execute_supabase_sql_async(sql, admin_token))).result()
-    return asyncio.run(execute_supabase_sql_async(sql, admin_token))
+            return executor.submit(lambda: asyncio.run(execute_supabase_sql_async(sql, resolved_token))).result()
+    return asyncio.run(execute_supabase_sql_async(sql, resolved_token))

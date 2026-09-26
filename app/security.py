@@ -1,11 +1,18 @@
+import logging
+from contextvars import ContextVar
 from typing import Annotated, Optional, Dict, Any
 from fastapi import Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import jwt
 from jwt import PyJWKClient
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from .config import settings
+
+logger = logging.getLogger(__name__)
+
+# Request-scoped ContextVar to propagate the verified admin token to tool executions
+admin_token_context: ContextVar[Optional[str]] = ContextVar("admin_token_context", default=None)
 
 # auto_error=False provides the green "Authorize" button in Swagger UI (/docs) without blocking guests
 security_scheme = HTTPBearer(auto_error=False)
@@ -31,6 +38,7 @@ class UserContext(BaseModel):
     user_id: Optional[str] = None
     email: Optional[str] = None
     username: Optional[str] = None
+    raw_token: Optional[str] = None
 
 
 def decode_supabase_jwt(token: str) -> Optional[Dict[str, Any]]:
@@ -66,7 +74,7 @@ def decode_supabase_jwt(token: str) -> Optional[Dict[str, Any]]:
             audience="authenticated",
         )
     except Exception as e:
-        print(f"[SECURITY] JWT decode failed: {type(e).__name__} - {e}")
+        logger.warning(f"JWT decode failed: {type(e).__name__} - {e}")
         return None
 
 
@@ -84,14 +92,17 @@ async def get_user_context(
     user_meta = payload.get("user_metadata") or {}
     app_meta = payload.get("app_metadata") or {}
 
-    email = (payload.get("email") or user_meta.get("email") or "").strip().lower()
+    # Top-level verified email and username for identification
+    verified_email = (payload.get("email") or "").strip().lower()
     username = (user_meta.get("user_name") or user_meta.get("preferred_username") or "").strip().lower()
     role = (app_meta.get("role") or payload.get("role") or "").strip()
 
-    # Determine Admin status directly against configured settings
+    # STRICT AUTHORIZATION:
+    # Per Supabase Security Guidelines: Never use user_metadata claims in authorization decisions.
+    # user_metadata is user-editable via client SDKs (signUp / updateUser).
+    # Authorize exclusively via top-level verified email or trusted app_metadata role.
     is_admin = (
-        (bool(email) and email in settings.admin_emails_list)
-        or (bool(username) and username in settings.admin_usernames_list)
+        (bool(verified_email) and verified_email in settings.admin_emails_list)
         or (bool(role) and role in settings.admin_roles_list)
     )
 
@@ -99,6 +110,7 @@ async def get_user_context(
         is_authenticated=True,
         is_admin=is_admin,
         user_id=user_id,
-        email=email if email else None,
+        email=verified_email if verified_email else None,
         username=username if username else None,
+        raw_token=credentials.credentials,
     )

@@ -1,11 +1,15 @@
 import json
 import logging
+import re
+from html import unescape
 from functools import lru_cache
 from pathlib import Path
 from typing import List, Dict, Any
+import httpx
 from pypdf import PdfReader
 
-from .portfolio_service import get_portfolio_context
+from .config import load_prompt_file
+from .portfolio_service import get_portfolio_context, get_live_resume_context
 from .db_service import execute_supabase_sql
 
 logger = logging.getLogger(__name__)
@@ -39,8 +43,56 @@ def get_vincent_info() -> list[dict]:
 
 
 def get_resume() -> list[dict]:
-    """Returns the text content of Vincent Yuan's resume."""
-    return [{"type": "text", "text": _load_resume_text()}]
+    """Returns Vincent Yuan's live resume text from Supabase public.resume_latex (with local PDF fallback)."""
+    text = get_live_resume_context(fallback_fn=_load_resume_text)
+    return [{"type": "text", "text": text}]
+
+
+def web_search(query: str) -> list[dict]:
+    """
+    Performs a live web search to find current information, external facts, or documentation.
+    Extracts relevant snippets, titles, and links.
+    """
+    logger.info(f"Executing web search for query: {query}")
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Referer": "https://html.duckduckgo.com/",
+        }
+        with httpx.Client(timeout=10.0, follow_redirects=True) as http_client:
+            resp = http_client.post(
+                "https://html.duckduckgo.com/html/",
+                data={"q": query},
+                headers=headers,
+            )
+
+        if resp.status_code != 200:
+            return [{"type": "text", "text": f"Search returned status code {resp.status_code}."}]
+
+        raw_results = re.findall(
+            r'<h2 class="result__title">.*?<a class="result__url"[^>]*href="([^"]+)"[^>]*>(.*?)</a>.*?<a class="result__snippet[^"]*"[^>]*>(.*?)</a>',
+            resp.text,
+            re.DOTALL,
+        )
+
+        results = []
+        for link, title_html, snippet_html in raw_results[:5]:
+            title = unescape(re.sub(r'<[^>]+>', '', title_html)).strip()
+            snippet = unescape(re.sub(r'<[^>]+>', '', snippet_html)).strip()
+            results.append(f"Title: {title}\nURL: {link.strip()}\nSummary: {snippet}")
+
+        if not results:
+            snippets = re.findall(r'class="result__snippet[^"]*"[^>]*>(.*?)</a>', resp.text, re.DOTALL)
+            for snip in snippets[:5]:
+                clean = unescape(re.sub(r'<[^>]+>', '', snip)).strip()
+                results.append(clean)
+
+        output_text = "\n\n".join(results) if results else "No relevant search results found."
+        return [{"type": "text", "text": output_text}]
+    except Exception as e:
+        logger.error(f"Error performing web search: {e}")
+        return [{"type": "text", "text": f"Web search error: {str(e)}"}]
+
 
 
 def execute_supabase_sql_action(sql: str, explanation: str = "") -> list[dict]:
@@ -83,8 +135,6 @@ get_vincent_info_tool = {
     },
 }
 
-
-
 get_resume_tool = {
     "type": "function",
     "name": "get_resume",
@@ -95,68 +145,30 @@ get_resume_tool = {
     },
 }
 
+web_search_tool = {
+    "type": "function",
+    "name": "web_search",
+    "description": (
+        "Performs a live web search to find current information, recent news, external articles, "
+        "or facts not present in Vincent's database. Call this tool whenever you feel you need "
+        "more information, external documentation, or up-to-date facts to answer the user's question accurately."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "The search query string to look up on the web.",
+            }
+        },
+        "required": ["query"],
+    },
+}
+
 execute_supabase_sql_tool = {
     "type": "function",
     "name": "execute_supabase_sql",
-    "description": (
-        "ADMIN-ONLY TOOL: Executes a safe PostgreSQL SQL statement directly against Vincent's Supabase database to add, update, or edit portfolio tables.\n\n"
-        "TABLE SCHEMAS & COLUMN TYPES:\n"
-        "1. public.profile (Single row, id = 1):\n"
-        "   - id: integer (always 1)\n"
-        "   - name, headline, tagline, email, github, linkedin, role: text\n"
-        "   - capability_pillars, hobbies, hanko_card, origin_story: jsonb\n"
-        "   - updated_at: timestamp with time zone (set to NOW())\n"
-        "2. public.projects:\n"
-        "   - id: text (primary key slug e.g. 'ai-agent-copilot')\n"
-        "   - title: text (e.g. 'AI Agent Copilot')\n"
-        "   - subtitle: text\n"
-        "   - category: text\n"
-        "   - description: text\n"
-        "   - overview: text\n"
-        "   - tech_stacks: text[] (use ARRAY['tag1', 'tag2']::text[])\n"
-        "   - bullets: text[] (use ARRAY['bullet 1', 'bullet 2']::text[])\n"
-        "   - github_link, live_link, badge, image: text\n"
-        "   - kanji: text (single thematic Japanese kanji, e.g. '創', '智', '基', '迅', '墨')\n"
-        "   - is_featured: boolean\n"
-        "   - is_active: boolean\n"
-        "   - status_label: text (e.g. 'ACTIVE / 稼働中', 'COMPLETED / 完了')\n"
-        "   - start_date, end_date: text (e.g. 'September 2025')\n"
-        "   - display_order: integer\n"
-        "   - updated_at: timestamp with time zone (set to NOW())\n"
-        "3. public.experience:\n"
-        "   - id: uuid (primary key, use gen_random_uuid() for new rows)\n"
-        "   - title: text (e.g. 'Staff AI Engineer')\n"
-        "   - company: text (e.g. 'Google DeepMind')\n"
-        "   - location: text (e.g. 'Mountain View, CA')\n"
-        "   - start_date, end_date: text (e.g. 'March 2025', 'Present')\n"
-        "   - overview, description: text\n"
-        "   - bullets: jsonb (use '[\"bullet 1\", \"bullet 2\"]'::jsonb)\n"
-        "   - tags: jsonb (use '[\"Python\", \"PyTorch\"]'::jsonb)\n"
-        "   - is_active: boolean (true if current/present)\n"
-        "   - status_label: text (e.g. 'ACTIVE / 現職' or '歴任 / COMPLETED')\n"
-        "   - kanji: text (single kanji, e.g. '木', '墨', '明', '原', '創')\n"
-        "   - kanji_subtitle: text (2-5 uppercase chars e.g. 'AI', 'CRAFT', 'SYS')\n"
-        "   - logo_url: text\n"
-        "   - display_order: integer\n"
-        "   - updated_at: timestamp with time zone (set to NOW())\n"
-        "4. public.philosophy_pillars:\n"
-        "   - position: integer (1, 2, or 3)\n"
-        "   - kanji: text\n"
-        "   - romaji: text\n"
-        "   - title: text\n"
-        "   - tag: text\n"
-        "   - description: text\n"
-        "   - updated_at: timestamp with time zone (set to NOW())\n"
-        "5. public.resume_latex:\n"
-        "   - id: integer\n"
-        "   - content, resume_link, latex: text\n"
-        "   - updated_at: timestamp with time zone (set to NOW())\n\n"
-        "CRITICAL RULES:\n"
-        "- Use PostgreSQL dollar-quoting ($$text$$) for string fields to avoid escaping bugs with quotes and newlines.\n"
-        "- If user gives an exact text instruction for a specific field, map it 1-to-1 verbatim.\n"
-        "- For unspecified fields, semantically infer appropriate, high-quality values matching context and portfolio style.\n"
-        "- Never run DROP, TRUNCATE, ALTER, or unconditioned DELETE without a WHERE clause."
-    ),
+    "description": load_prompt_file("supabase_sql_tool_description.md"),
     "parameters": {
         "type": "object",
         "properties": {
@@ -173,13 +185,17 @@ execute_supabase_sql_tool = {
     },
 }
 
+# Built-in Gemini tools
+url_context_tool = {"type": "url_context"}
+
 # Base tools available to all users (admin and guests)
-BASE_TOOLS_SCHEMA = [get_vincent_info_tool, get_resume_tool]
+BASE_TOOLS_SCHEMA = [url_context_tool, get_vincent_info_tool, get_resume_tool, web_search_tool]
 
 TOOL_FUNCTIONS = {
     "get_vincent_info": get_vincent_info,
     "get_resume": get_resume,
     "execute_supabase_sql": execute_supabase_sql_action,
+    "web_search": web_search,
 }
 
 
