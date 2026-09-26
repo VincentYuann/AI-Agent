@@ -206,8 +206,10 @@ async def execute_supabase_sql_async(sql: str, admin_token: Optional[str] = None
                     invalidate_portfolio_cache()
 
                 logger.info("Supabase SQL executed successfully via RPC.")
+                rows_affected = payload.get("rows_affected") if isinstance(payload, dict) else None
                 return {
                     "status": "success",
+                    "rows_affected": rows_affected,
                     "data": payload,
                     "message": "Query executed successfully on Supabase PostgreSQL.",
                 }

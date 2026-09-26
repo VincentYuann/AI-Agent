@@ -97,6 +97,7 @@ TABLE 5: public.resume_latex (Single row, id = 1)
    - For `experience` (jsonb): Use `'["item1", "item2"]'::jsonb`.
 3. NEVER run DROP, TRUNCATE, ALTER, or unbounded DELETE without a specific WHERE clause.
 4. Set `updated_at = NOW()` on all UPDATE and UPSERT operations.
+5. UPDATE VS INSERT MANDATE: To edit or update an existing role, job, or project, ALWAYS use `UPDATE ... WHERE company ILIKE ...` (or by title/id). NEVER use `INSERT` for an entity already in the database. Blind `INSERT` with `gen_random_uuid()` creates duplicate rows and is strictly forbidden.
 
 ================================================================================
 4. FEW-SHOT SQL EXAMPLE GUIDES FOR AI
@@ -168,7 +169,16 @@ ON CONFLICT (id) DO UPDATE SET
   updated_at = NOW();
 ```
 
---- EXAMPLE 2: Upserting Work Experience into public.experience ---
+--- EXAMPLE 2A: Updating an Existing Work Experience Entry (MANDATORY for edits) ---
+```sql
+UPDATE public.experience SET
+  kanji = $$庫$$,
+  kanji_subtitle = $$WHS$$,
+  updated_at = NOW()
+WHERE company ILIKE $$%Hung Vuong%$$;
+```
+
+--- EXAMPLE 2B: Adding a Brand-New Work Experience Entry (STRICTLY for new roles) ---
 ```sql
 INSERT INTO public.experience (
   id,

@@ -261,3 +261,34 @@ def test_admin_token_propagation_from_context():
     fallback = get_admin_bearer_token()
     assert fallback is not None
     assert len(fallback) > 20
+
+
+@pytest.mark.asyncio
+async def test_execute_supabase_sql_async_rows_affected(monkeypatch):
+    import httpx
+    from app.tools import execute_supabase_sql_action
+
+    class MockSuccessResponse:
+        status_code = 200
+        def json(self):
+            return {"status": "success", "rows_affected": 1, "message": "Query executed successfully"}
+        @property
+        def text(self):
+            return '{"status": "success", "rows_affected": 1}'
+
+    class MockAsyncClient:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            pass
+        async def post(self, url, headers=None, json=None):
+            return MockSuccessResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: MockAsyncClient())
+    result = await execute_supabase_sql_async("UPDATE experience SET kanji = $$庫$$ WHERE id = 'test';")
+    assert result["status"] == "success"
+    assert result["rows_affected"] == 1
+
+    tool_res = execute_supabase_sql_action("UPDATE experience SET kanji = $$庫$$ WHERE id = 'test';")
+    assert "Records returned/affected: 1" in tool_res[0]["text"]
+

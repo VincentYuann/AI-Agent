@@ -25,7 +25,7 @@ def chat_with_agent_stream(
     current_input = user_input
     current_interaction_id = last_interaction_id
 
-    MAX_TOOL_TURNS = 6
+    MAX_TOOL_TURNS = 10
     turn_count = 0
 
     while True:

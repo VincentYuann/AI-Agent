@@ -59,11 +59,21 @@ def execute_supabase_sql_action(sql: str, explanation: str = "") -> list[dict]:
     res = execute_supabase_sql(sql)
 
     if res.get("status") == "success":
-        rows = res.get("rows_affected", 0)
+        rows = res.get("rows_affected")
         data = res.get("data")
-        msg = f"SUCCESS: SQL query executed successfully on Supabase PostgreSQL. Records returned/affected: {rows}."
-        if data:
+        if rows is not None:
+            msg = f"SUCCESS: SQL query executed successfully on Supabase PostgreSQL. Records returned/affected: {rows}."
+        else:
+            msg = "SUCCESS: SQL query executed successfully on Supabase PostgreSQL."
+
+        if isinstance(data, dict):
+            if "data" in data and data["data"] is not None:
+                msg += f"\nDatabase Result:\n{json.dumps(data['data'], indent=2, default=str)}"
+            elif data.get("message") and data.get("message") != "Query executed successfully":
+                msg += f"\nDatabase Result:\n{json.dumps(data, indent=2, default=str)}"
+        elif data:
             msg += f"\nDatabase Result:\n{json.dumps(data, indent=2, default=str)}"
+
         return [{"type": "text", "text": msg}]
     else:
         err_msg = res.get("message", "Unknown database execution error.")
