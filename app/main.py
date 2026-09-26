@@ -135,13 +135,18 @@ async def chat_endpoint(
     # 3. Stream real-time tokens via Server-Sent Events (SSE) if requested
     if stream:
         def event_generator():
-            yield f"data: {json.dumps({'type': 'init', 'user_type': user_type, 'model': settings.MODEL_NAME})}\n\n"
-            for event in chat_with_agent_stream(
-                user_input=user_input,
-                is_admin=user.is_admin,
-                last_interaction_id=clean_interaction_id,
-            ):
-                yield f"data: {json.dumps(event)}\n\n"
+            try:
+                yield f"data: {json.dumps({'type': 'init', 'user_type': user_type, 'model': settings.MODEL_NAME})}\n\n"
+                for event in chat_with_agent_stream(
+                    user_input=user_input,
+                    is_admin=user.is_admin,
+                    last_interaction_id=clean_interaction_id,
+                ):
+                    yield f"data: {json.dumps(event)}\n\n"
+            except HTTPException as http_exc:
+                yield f"data: {json.dumps({'type': 'error', 'detail': http_exc.detail, 'status_code': http_exc.status_code})}\n\n"
+            except Exception as exc:
+                yield f"data: {json.dumps({'type': 'error', 'detail': str(exc), 'status_code': 500})}\n\n"
 
         return StreamingResponse(
             event_generator(),

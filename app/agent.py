@@ -81,17 +81,41 @@ def chat_with_agent_stream(
                             "raw_arguments": "",
                         }
                         yield {"type": "tool_start", "name": step.name}
+                    elif step.type == "google_search_call":
+                        yield {"type": "tool_start", "name": "Google Search"}
                 elif event.event_type == "step.delta":
                     if event.delta.type == "text":
                         yield {"type": "delta", "text": event.delta.text}
                     elif event.delta.type == "arguments_delta":
                         if event.index in current_calls:
                             current_calls[event.index]["raw_arguments"] += (event.delta.arguments or "")
+                elif event.event_type == "error":
+                    err_obj = getattr(event, "error", None)
+                    err_code = getattr(err_obj, "code", "")
+                    err_msg = getattr(err_obj, "message", "") or str(err_obj) or "Unknown streaming error"
+                    if "quota" in str(err_code).lower() or "quota" in err_msg.lower() or "rate" in err_msg.lower() or "429" in err_msg:
+                        raise HTTPException(
+                            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                            detail="Rate limit or quota reached. Please check your Gemini plan/billing or wait a moment.",
+                        )
+                    raise HTTPException(
+                        status_code=status.HTTP_502_BAD_GATEWAY,
+                        detail=f"Gemini API streaming error: {err_msg}",
+                    )
+                elif event.event_type == "interaction.status_update":
+                    interaction_obj = getattr(event, "interaction", None)
+                    if interaction_obj and getattr(interaction_obj, "status", None) in ("failed", "cancelled"):
+                        raise HTTPException(
+                            status_code=status.HTTP_502_BAD_GATEWAY,
+                            detail=f"Interaction failed: {getattr(interaction_obj, 'error', 'Interrupted')}",
+                        )
                 elif event.event_type == "interaction.completed":
                     current_interaction_id = event.interaction.id
+        except HTTPException:
+            raise
         except Exception as e:
             error_msg = str(e)
-            if "429" in error_msg or "rate limit" in error_msg.lower():
+            if "429" in error_msg or "rate limit" in error_msg.lower() or "quota" in error_msg.lower():
                 raise HTTPException(
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                     detail="Rate limit reached. Please wait a few moments and try again.",

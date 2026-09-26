@@ -1,11 +1,8 @@
 import json
 import logging
-import re
-from html import unescape
 from functools import lru_cache
 from pathlib import Path
 from typing import List, Dict, Any
-import httpx
 from pypdf import PdfReader
 
 from .config import load_prompt_file
@@ -48,50 +45,7 @@ def get_resume() -> list[dict]:
     return [{"type": "text", "text": text}]
 
 
-def web_search(query: str) -> list[dict]:
-    """
-    Performs a live web search to find current information, external facts, or documentation.
-    Extracts relevant snippets, titles, and links.
-    """
-    logger.info(f"Executing web search for query: {query}")
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "Referer": "https://html.duckduckgo.com/",
-        }
-        with httpx.Client(timeout=10.0, follow_redirects=True) as http_client:
-            resp = http_client.post(
-                "https://html.duckduckgo.com/html/",
-                data={"q": query},
-                headers=headers,
-            )
 
-        if resp.status_code != 200:
-            return [{"type": "text", "text": f"Search returned status code {resp.status_code}."}]
-
-        raw_results = re.findall(
-            r'<h2 class="result__title">.*?<a class="result__url"[^>]*href="([^"]+)"[^>]*>(.*?)</a>.*?<a class="result__snippet[^"]*"[^>]*>(.*?)</a>',
-            resp.text,
-            re.DOTALL,
-        )
-
-        results = []
-        for link, title_html, snippet_html in raw_results[:5]:
-            title = unescape(re.sub(r'<[^>]+>', '', title_html)).strip()
-            snippet = unescape(re.sub(r'<[^>]+>', '', snippet_html)).strip()
-            results.append(f"Title: {title}\nURL: {link.strip()}\nSummary: {snippet}")
-
-        if not results:
-            snippets = re.findall(r'class="result__snippet[^"]*"[^>]*>(.*?)</a>', resp.text, re.DOTALL)
-            for snip in snippets[:5]:
-                clean = unescape(re.sub(r'<[^>]+>', '', snip)).strip()
-                results.append(clean)
-
-        output_text = "\n\n".join(results) if results else "No relevant search results found."
-        return [{"type": "text", "text": output_text}]
-    except Exception as e:
-        logger.error(f"Error performing web search: {e}")
-        return [{"type": "text", "text": f"Web search error: {str(e)}"}]
 
 
 
@@ -145,26 +99,6 @@ get_resume_tool = {
     },
 }
 
-web_search_tool = {
-    "type": "function",
-    "name": "web_search",
-    "description": (
-        "Performs a live web search to find current information, recent news, external articles, "
-        "or facts not present in Vincent's database. Call this tool whenever you feel you need "
-        "more information, external documentation, or up-to-date facts to answer the user's question accurately."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "query": {
-                "type": "string",
-                "description": "The search query string to look up on the web.",
-            }
-        },
-        "required": ["query"],
-    },
-}
-
 execute_supabase_sql_tool = {
     "type": "function",
     "name": "execute_supabase_sql",
@@ -186,16 +120,16 @@ execute_supabase_sql_tool = {
 }
 
 # Built-in Gemini tools
+google_search_tool = {"type": "google_search"}
 url_context_tool = {"type": "url_context"}
 
 # Base tools available to all users (admin and guests)
-BASE_TOOLS_SCHEMA = [url_context_tool, get_vincent_info_tool, get_resume_tool, web_search_tool]
+BASE_TOOLS_SCHEMA = [google_search_tool, url_context_tool, get_vincent_info_tool, get_resume_tool]
 
 TOOL_FUNCTIONS = {
     "get_vincent_info": get_vincent_info,
     "get_resume": get_resume,
     "execute_supabase_sql": execute_supabase_sql_action,
-    "web_search": web_search,
 }
 
 
