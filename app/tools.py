@@ -124,7 +124,8 @@ google_search_tool = {"type": "google_search"}
 url_context_tool = {"type": "url_context"}
 
 # Base tools available to all users (admin and guests)
-BASE_TOOLS_SCHEMA = [google_search_tool, url_context_tool, get_vincent_info_tool, get_resume_tool]
+# Note: google_search_tool requires paid Google Search grounding billing ($35/1k) and fails on Free Tier
+BASE_TOOLS_SCHEMA = [url_context_tool, get_vincent_info_tool, get_resume_tool]
 
 TOOL_FUNCTIONS = {
     "get_vincent_info": get_vincent_info,

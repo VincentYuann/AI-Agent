@@ -1,8 +1,11 @@
 import json
+import logging
 from typing import Optional, Union, List, Dict, Any, Tuple, Generator
 from fastapi import HTTPException, status
 from .config import client, settings
 from .tools import get_agent_tools, TOOL_FUNCTIONS
+
+logger = logging.getLogger(__name__)
 
 
 def chat_with_agent_stream(
@@ -55,14 +58,20 @@ def chat_with_agent_stream(
             stream = client.interactions.create(**kwargs)
         except Exception as e:
             error_msg = str(e)
-            if "429" in error_msg or "rate limit" in error_msg.lower() or "quota" in error_msg.lower():
+            logger.error(f"Failed to create interaction with Gemini API: {error_msg}")
+            if "402" in error_msg or "prepayment" in error_msg.lower() or "billing" in error_msg.lower():
+                raise HTTPException(
+                    status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                    detail="AI service billing or prepayment credits depleted. Please check Google AI Studio billing.",
+                )
+            if "429" in error_msg or "rate limit" in error_msg.lower() or "quota" in error_msg.lower() or "resource_exhausted" in error_msg.lower():
                 raise HTTPException(
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                     detail="Rate limit reached. Please wait a few moments and try again.",
                 )
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="The AI service is momentarily unavailable. Please try again shortly.",
+                detail=f"The AI service is momentarily unavailable: {error_msg}",
             )
 
         current_calls = {}
@@ -93,7 +102,13 @@ def chat_with_agent_stream(
                     err_obj = getattr(event, "error", None)
                     err_code = getattr(err_obj, "code", "")
                     err_msg = getattr(err_obj, "message", "") or str(err_obj) or "Unknown streaming error"
-                    if "quota" in str(err_code).lower() or "quota" in err_msg.lower() or "rate" in err_msg.lower() or "429" in err_msg:
+                    logger.error(f"Gemini streaming error event: code={err_code}, message={err_msg}")
+                    if "402" in str(err_code) or "prepayment" in err_msg.lower() or "billing" in err_msg.lower():
+                        raise HTTPException(
+                            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                            detail="AI service billing or prepayment credits depleted. Please check Google AI Studio billing.",
+                        )
+                    if "quota" in str(err_code).lower() or "quota" in err_msg.lower() or "rate" in err_msg.lower() or "429" in err_msg or "resource_exhausted" in str(err_code).lower():
                         raise HTTPException(
                             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                             detail="Rate limit or quota reached. Please check your Gemini plan/billing or wait a moment.",
@@ -105,9 +120,11 @@ def chat_with_agent_stream(
                 elif event.event_type == "interaction.status_update":
                     interaction_obj = getattr(event, "interaction", None)
                     if interaction_obj and getattr(interaction_obj, "status", None) in ("failed", "cancelled"):
+                        err_detail = getattr(interaction_obj, 'error', 'Interrupted')
+                        logger.error(f"Interaction status failed/cancelled: {err_detail}")
                         raise HTTPException(
                             status_code=status.HTTP_502_BAD_GATEWAY,
-                            detail=f"Interaction failed: {getattr(interaction_obj, 'error', 'Interrupted')}",
+                            detail=f"Interaction failed: {err_detail}",
                         )
                 elif event.event_type == "interaction.completed":
                     current_interaction_id = event.interaction.id
@@ -115,7 +132,13 @@ def chat_with_agent_stream(
             raise
         except Exception as e:
             error_msg = str(e)
-            if "429" in error_msg or "rate limit" in error_msg.lower() or "quota" in error_msg.lower():
+            logger.error(f"Error during stream generation: {error_msg}")
+            if "402" in error_msg or "prepayment" in error_msg.lower() or "billing" in error_msg.lower():
+                raise HTTPException(
+                    status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                    detail="AI service billing or prepayment credits depleted. Please check Google AI Studio billing.",
+                )
+            if "429" in error_msg or "rate limit" in error_msg.lower() or "quota" in error_msg.lower() or "resource_exhausted" in error_msg.lower():
                 raise HTTPException(
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                     detail="Rate limit reached. Please wait a few moments and try again.",
