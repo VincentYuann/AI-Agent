@@ -22,6 +22,7 @@ def chat_with_agent_stream(
       - {"type": "done", "interaction_id": "...", "model": "..."}
     """
     tools = get_agent_tools(is_admin=is_admin)
+    turn_parent_id = last_interaction_id
     current_input = user_input
     current_interaction_id = last_interaction_id
 
@@ -51,8 +52,9 @@ def chat_with_agent_stream(
         if tools:
             kwargs["tools"] = tools
 
-        if current_interaction_id:
-            kwargs["previous_interaction_id"] = current_interaction_id
+        # Anchor continuation turns to the parent interaction before this turn began
+        if turn_parent_id:
+            kwargs["previous_interaction_id"] = turn_parent_id
 
         try:
             stream = client.interactions.create(**kwargs)
@@ -163,8 +165,9 @@ def chat_with_agent_stream(
         for call in current_calls.values():
             func_name = call["name"]
             func_id = call["id"]
+            local_name = func_name.replace("default_api:", "")
 
-            if func_name not in allowed_tool_names:
+            if local_name not in allowed_tool_names and func_name not in allowed_tool_names:
                 result_content = f"Unauthorized: Tool '{func_name}' is not permitted for your current access level."
             else:
                 raw_args = call.get("raw_arguments", "")
@@ -183,7 +186,7 @@ def chat_with_agent_stream(
                 else:
                     args = {}
 
-                func = TOOL_FUNCTIONS.get(func_name)
+                func = TOOL_FUNCTIONS.get(local_name) or TOOL_FUNCTIONS.get(func_name)
                 if not func:
                     result_content = f"Function {func_name} not found"
                 else:
@@ -205,7 +208,15 @@ def chat_with_agent_stream(
                 "result": final_result,
             })
 
-        current_input = function_results
+        # Fetch the interaction that requested these calls to construct the full ordered timeline of this turn
+        try:
+            ix = client.interactions.get(current_interaction_id)
+            turn_history = [s.model_dump() for s in ix.steps]
+            turn_history.extend(function_results)
+            current_input = turn_history
+        except Exception as exc:
+            logger.warning(f"Could not fetch interaction steps for {current_interaction_id}: {exc}")
+            current_input = function_results
 
 
 def chat_with_agent(
