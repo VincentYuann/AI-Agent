@@ -28,6 +28,9 @@ DECLARE
 BEGIN
   SELECT jsonb_build_object(
     'candidate', 'Vincent Yuan',
+    'resume_link', (
+      SELECT resume_link FROM resume_latex WHERE id = 1 LIMIT 1
+    ),
     'profile', (
       SELECT jsonb_build_object(
         'name', p.name,

@@ -15,16 +15,16 @@ ADMIN-ONLY TOOL: Executes a validated, safe PostgreSQL SQL statement directly ag
 TABLE 1: public.profile (Single singleton row, id = 1)
 - id: integer (PRIMARY KEY, always 1)
 - name: text — Vincent's full professional name ('Vincent Yuan').
-- role: text — Primary professional identity shown in hero badge (e.g. 'Full-Stack Software Engineer · Systems Architecture & AI').
-- headline: text — Main H1 hero punchline statement on homepage (e.g. 'Architecting resilient, local-first intelligence and high-throughput systems.').
+- role: text — Primary professional identity shown in hero badge ('Full-Stack AI & Software Engineer').
+- headline: text — Main H1 hero statement on homepage ('Building resilient full-stack systems and intelligent web applications.').
 - tagline: text — Secondary narrative biography paragraph expanding on his engineering approach and philosophy.
 - email: text — Contact email address ('vincentyuan1020@gmail.com').
 - github: text — GitHub profile URL ('https://github.com/VincentYuann').
 - linkedin: text — LinkedIn profile URL.
 - capability_pillars: jsonb — Array of up to 3 domain cards shown in intro:
-    [{"label": "FULL-STACK", "items": "React · TypeScript · Tailwind · Vite", "tags": ["React", "TypeScript", "Tailwind", "Vite"]}]
-- hanko_card: jsonb — Traditional Japanese artisan seal card configuration:
-    {"headerLabel": "SEAL / 認印", "locationArchive": "PHILADELPHIA, PA", "stampCharacter": "原", "statusBadge": "AVAILABLE FOR WORK", "lines": [{"text": "簡潔な構造美", "label": "CLEAN ARCH", "tooltip": "Clean and intentional system structure"}]}
+    [{"label": "FRONTEND & UI", "items": "React · TypeScript · Tailwind · Vercel · Vite", "tags": ["React", "TypeScript", "Tailwind", "Vercel", "Vite"]}]
+- hanko_card: jsonb — Recruiter identity plaque card configuration:
+    {"headerLabel": "Drexel University · CS & Math", "locationArchive": "Philadelphia, PA", "stampCharacter": "原", "statusBadge": "OPEN TO FULL-STACK ROLES"}
 - origin_story: jsonb — 4-phase personal engineering trajectory rendered in Trajectory section:
     {"badge": "TRAJECTORY & ORIGIN", "headline": "From Hardware Curiosity to Autonomous Systems", "leadParagraph": "...", "milestones": [{"era": "PHASE 01 // 2018–2021", "title": "Foundational Hardware & Systems Curiosity", "subtitle": "Linux kernel & low-level scripting", "tag": "GENESIS", "description": "..."}]}
 - hobbies: jsonb — Personal hobbies & passions:
