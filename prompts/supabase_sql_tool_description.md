@@ -24,7 +24,7 @@ TABLE 1: public.profile (Single singleton row, id = 1)
 - capability_pillars: jsonb — Array of up to 3 domain cards shown in intro:
     [{"label": "FRONTEND & UI", "items": "React · TypeScript · Tailwind · Vercel · Vite", "tags": ["React", "TypeScript", "Tailwind", "Vercel", "Vite"]}]
 - hanko_card: jsonb — Recruiter identity plaque card configuration:
-    {"headerLabel": "Drexel University · CS & Math", "locationArchive": "Philadelphia, PA", "stampCharacter": "原", "statusBadge": "OPEN TO FULL-STACK ROLES"}
+    {"headerLabel": "Drexel University · CS & Math", "locationArchive": "Philadelphia, PA", "stampCharacter": "原"}
 - origin_story: jsonb — 4-phase personal engineering trajectory rendered in Trajectory section:
     {"badge": "TRAJECTORY & ORIGIN", "headline": "From Hardware Curiosity to Autonomous Systems", "leadParagraph": "...", "milestones": [{"era": "PHASE 01 // 2018–2021", "title": "Foundational Hardware & Systems Curiosity", "subtitle": "Linux kernel & low-level scripting", "tag": "GENESIS", "description": "..."}]}
 - hobbies: jsonb — Personal hobbies & passions:
